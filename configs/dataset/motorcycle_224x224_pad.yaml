@@ -1,0 +1,3 @@
+# @package _global_
+data:
+  train_dir: motorcycle_224x224_pad

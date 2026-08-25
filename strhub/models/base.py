@@ -50,13 +50,13 @@ EPOCH_OUTPUT = list[dict[str, BatchResult]]
 class BaseSystem(pl.LightningModule, ABC):
 
     def __init__(
-        self,
-        tokenizer: BaseTokenizer,
-        charset_test: str,
-        batch_size: int,
-        lr: float,
-        warmup_pct: float,
-        weight_decay: float,
+            self,
+            tokenizer: BaseTokenizer,
+            charset_test: str,
+            batch_size: int,
+            lr: float,
+            warmup_pct: float,
+            weight_decay: float,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
@@ -171,9 +171,15 @@ class BaseSystem(pl.LightningModule, ABC):
     def on_validation_epoch_end(self) -> None:
         acc, ned, loss = self._aggregate_results(self.outputs)
         self.outputs.clear()
-        self.log('val_accuracy', 100 * acc, sync_dist=True)
-        self.log('val_NED', 100 * ned, sync_dist=True)
-        self.log('val_loss', loss, sync_dist=True)
+        self.log('val_accuracy', 100 * acc, sync_dist=True, prog_bar=True,
+                 on_step=False,
+                 on_epoch=True)
+        self.log('val_NED', 100 * ned, sync_dist=True, prog_bar=True,
+                 on_step=False,
+                 on_epoch=True)
+        self.log('val_loss', loss, sync_dist=True, prog_bar=True,
+                 on_step=False,
+                 on_epoch=True)
         self.log('hp_metric', acc, sync_dist=True)
 
     def test_step(self, batch, batch_idx) -> Optional[STEP_OUTPUT]:
@@ -183,7 +189,8 @@ class BaseSystem(pl.LightningModule, ABC):
 class CrossEntropySystem(BaseSystem):
 
     def __init__(
-        self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float, weight_decay: float
+            self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float,
+            weight_decay: float
     ) -> None:
         tokenizer = Tokenizer(charset_train)
         super().__init__(tokenizer, charset_test, batch_size, lr, warmup_pct, weight_decay)
@@ -204,7 +211,8 @@ class CrossEntropySystem(BaseSystem):
 class CTCSystem(BaseSystem):
 
     def __init__(
-        self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float, weight_decay: float
+            self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float,
+            weight_decay: float
     ) -> None:
         tokenizer = CTCTokenizer(charset_train)
         super().__init__(tokenizer, charset_test, batch_size, lr, warmup_pct, weight_decay)
