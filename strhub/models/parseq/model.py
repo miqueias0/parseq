@@ -25,7 +25,7 @@ from timm.models.helpers import named_apply
 from strhub.data.utils import Tokenizer
 from strhub.models.utils import init_weights
 
-from .modules import Decoder, DecoderLayer, Encoder, TokenEmbedding
+from .modules import Decoder, DecoderLayer, Encoder, HybridEncoder, TokenEmbedding
 
 
 class PARSeq(nn.Module):
@@ -46,16 +46,45 @@ class PARSeq(nn.Module):
         decode_ar: bool,
         refine_iters: int,
         dropout: float,
+        backbone: Optional[str] = None,
+        pretrained_backbone: bool = False,
+        backbone_out_idx: Optional[int] = None,
+        dw_stride: Sequence[int] = (1, 2),
+        pos_embed_type: str = 'learned',
+        block_type: str = 'transformer',
+        cnn_depth: int = 0,
+        **kwargs,
     ) -> None:
         super().__init__()
 
         self.max_label_length = max_label_length
         self.decode_ar = decode_ar
         self.refine_iters = refine_iters
+        self.cnn_depth = cnn_depth
+        self.enc_depth = enc_depth
 
-        self.encoder = Encoder(
-            img_size, patch_size, embed_dim=embed_dim, depth=enc_depth, num_heads=enc_num_heads, mlp_ratio=enc_mlp_ratio
-        )
+        if (backbone is not None and str(backbone).lower() != 'vit') or cnn_depth > 0:
+            effective_backbone = backbone if (backbone is not None and str(backbone).lower() != 'vit') else 'conv_stem'
+            self.encoder = HybridEncoder(
+                img_size=img_size,
+                embed_dim=embed_dim,
+                depth=enc_depth,
+                cnn_depth=cnn_depth,
+                num_heads=enc_num_heads,
+                mlp_ratio=enc_mlp_ratio,
+                backbone=effective_backbone,
+                pretrained_backbone=pretrained_backbone,
+                backbone_out_idx=backbone_out_idx,
+                dw_stride=dw_stride,
+                pos_embed_type=pos_embed_type,
+                block_type=block_type,
+                drop_rate=dropout,
+                attn_drop_rate=dropout,
+            )
+        else:
+            self.encoder = Encoder(
+                img_size, patch_size, embed_dim=embed_dim, depth=enc_depth, num_heads=enc_num_heads, mlp_ratio=enc_mlp_ratio
+            )
         decoder_layer = DecoderLayer(embed_dim, dec_num_heads, embed_dim * dec_mlp_ratio, dropout)
         self.decoder = Decoder(decoder_layer, num_layers=dec_depth, norm=nn.LayerNorm(embed_dim))
 

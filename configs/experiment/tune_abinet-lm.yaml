@@ -1,4 +1,6 @@
 # @package _global_
+experiment_name: tune_abinet-lm
+experiment: tune_abinet-lm
 defaults:
   - override /model: abinet
 

@@ -1,0 +1,34 @@
+name: parseq-cnn-repvit-heads3-3
+_target_: strhub.models.parseq_hybrid.system.PARSeq
+
+# Data & Geometry
+patch_size: [ 4, 8 ]
+
+# CNN Backbone (RepViT) + 4 ViT com 3 cabeças no encoder e 3 no decoder
+backbone: repvit_m0_9
+pretrained_backbone: false
+dw_stride: [ 1, 2 ]
+pos_embed_type: learned
+
+# Architecture
+embed_dim: 192
+enc_num_heads: 3      # 192 / 3 = 64 dim por cabeça
+enc_mlp_ratio: 3
+enc_depth: 4
+dec_num_heads: 3
+dec_mlp_ratio: 3
+dec_depth: 1
+
+# Training
+lr: 7e-4
+weight_decay: 1e-4
+perm_num: 4
+perm_forward: true
+perm_mirrored: true
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.1
+
+# Decoding mode (inference)
+decode_ar: false
+refine_iters: 1

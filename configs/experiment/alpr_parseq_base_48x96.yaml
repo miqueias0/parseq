@@ -1,0 +1,16 @@
+# @package _global_
+experiment_name: alpr_parseq_base_48x96
+experiment: alpr_parseq_base_48x96
+# PARSeq Base ALPR - Backbone ViT-Small Original (embed_dim: 384, enc_depth: 12)
+# Adaptado para ALPR: Resolução 48x96, Patch [6, 8], Decodificação NAR e Charset 36 classes
+defaults:
+  - override /model: parseq
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 48, 96 ]
+  patch_size: [ 6, 8 ]
+  max_label_length: 8
+  perm_num: 4
+  decode_ar: false
+  refine_iters: 1

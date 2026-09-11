@@ -42,20 +42,29 @@ class PARSeq(CrossEntropySystem):
         warmup_pct: float,
         weight_decay: float,
         img_size: Sequence[int],
-        patch_size: Sequence[int],
-        embed_dim: int,
-        enc_num_heads: int,
-        enc_mlp_ratio: int,
-        enc_depth: int,
-        dec_num_heads: int,
-        dec_mlp_ratio: int,
-        dec_depth: int,
-        perm_num: int,
-        perm_forward: bool,
-        perm_mirrored: bool,
-        decode_ar: bool,
-        refine_iters: int,
-        dropout: float,
+        patch_size: Sequence[int] = (4, 8),
+        embed_dim: int = 384,
+        enc_num_heads: int = 6,
+        enc_mlp_ratio: int = 4,
+        enc_depth: int = 12,
+        dec_num_heads: int = 12,
+        dec_mlp_ratio: int = 4,
+        dec_depth: int = 1,
+        perm_num: int = 4,
+        perm_forward: bool = True,
+        perm_mirrored: bool = True,
+        decode_ar: bool = False,
+        refine_iters: int = 1,
+        dropout: float = 0.15,
+        perm_forward_weight: float = 2.0,
+        label_smoothing: float = 0.05,
+        backbone: Optional[str] = None,
+        pretrained_backbone: bool = False,
+        backbone_out_idx: Optional[int] = None,
+        dw_stride: Sequence[int] = (1, 2),
+        pos_embed_type: str = 'learned',
+        block_type: str = 'transformer',
+        cnn_depth: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(charset_train, charset_test, batch_size, lr, warmup_pct, weight_decay)
@@ -76,6 +85,14 @@ class PARSeq(CrossEntropySystem):
             decode_ar,
             refine_iters,
             dropout,
+            backbone=backbone,
+            pretrained_backbone=pretrained_backbone,
+            backbone_out_idx=backbone_out_idx,
+            dw_stride=dw_stride,
+            pos_embed_type=pos_embed_type,
+            block_type=block_type,
+            cnn_depth=cnn_depth,
+            **kwargs,
         )
 
         # Perm/attn mask stuff
@@ -83,6 +100,12 @@ class PARSeq(CrossEntropySystem):
         self.max_gen_perms = perm_num // 2 if perm_mirrored else perm_num
         self.perm_forward = perm_forward
         self.perm_mirrored = perm_mirrored
+        self.perm_forward_weight = perm_forward_weight
+        self.label_smoothing = label_smoothing
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {'model.' + n for n in self.model.no_weight_decay()}
 
     def forward(self, images: Tensor, max_length: Optional[int] = None) -> Tensor:
         return self.model.forward(self.tokenizer, images, max_length)
@@ -187,8 +210,11 @@ class PARSeq(CrossEntropySystem):
             tgt_mask, query_mask = self.generate_attn_masks(perm)
             out = self.model.decode(tgt_in, memory, tgt_mask, tgt_padding_mask, tgt_query_mask=query_mask)
             logits = self.model.head(out).flatten(end_dim=1)
-            loss += n * F.cross_entropy(logits, tgt_out.flatten(), ignore_index=self.pad_id)
-            loss_numel += n
+            weight = self.perm_forward_weight if (i == 0 and self.perm_forward) else 1.0
+            loss += weight * n * F.cross_entropy(
+                logits, tgt_out.flatten(), ignore_index=self.pad_id, label_smoothing=self.label_smoothing
+            )
+            loss_numel += weight * n
             # After the second iteration (i.e. done with canonical and reverse orderings),
             # remove the [EOS] tokens for the succeeding perms
             if i == 1:

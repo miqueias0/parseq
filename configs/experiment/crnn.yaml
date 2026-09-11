@@ -1,4 +1,6 @@
 # @package _global_
+experiment_name: crnn
+experiment: crnn
 defaults:
   - override /model: crnn
 

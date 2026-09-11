@@ -1,0 +1,10 @@
+# @package _global_
+experiment_name: exp_64x96_parseq_cnn_repvit_embed256_enc_depth2
+defaults:
+  - override /model: parseq_cnn_repvit_embed256_enc_depth2
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_64x96
+
+model:
+  img_size: [ 64, 96 ]
+  max_label_length: 8

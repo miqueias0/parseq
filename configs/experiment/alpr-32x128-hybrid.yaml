@@ -1,0 +1,16 @@
+# @package _global_
+defaults:
+  - override /model: alpr_parseq
+  - override /charset: alpr
+
+model:
+  name: alpr-32x128-hybrid
+  img_size: [ 32, 128 ]
+  embed_dim: 384
+  num_cnn_stages: 4
+  num_vit_layers: 4
+  backbone_type: custom_cnn
+  enc_num_heads: 6
+  dec_num_heads: 12
+  max_label_length: 7
+  refine_iters: 0

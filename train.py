@@ -27,6 +27,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveragi
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities.model_summary import summarize
+from torch import nn
 
 from strhub.data.module import SceneTextDataModule
 from strhub.models.base import BaseSystem

@@ -1,0 +1,13 @@
+# @package _global_
+experiment_name: alpr_parseq_small_48x96
+experiment: alpr_parseq_small_48x96
+# PARSeq Small ALPR - Resolução 48x96, Patch [6, 8] (96 tokens)
+# Modelo balanceado com embed_dim: 256 e enc_depth: 8 (~6M parâmetros)
+defaults:
+  - override /model: parseq_alpr_small
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 48, 96 ]
+  patch_size: [ 6, 8 ]
+  max_label_length: 8

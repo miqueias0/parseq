@@ -1,0 +1,28 @@
+name: parseq-alpr-fast
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data & Geometry
+patch_size: [ 6, 8 ]  # [ height, width ] - Projetado para 48x96 (8x12 = 96 tokens)
+
+# Architecture (Tiny / Custom para ALPR - Alto FPS)
+embed_dim: 192        # Redução drástica de memória e FLOPS (~2.8M parâmetros)
+enc_num_heads: 6      # 192 / 6 = 32 dim por cabeça
+enc_mlp_ratio: 3      # MLP mais leve (192 * 3 = 576)
+enc_depth: 6          # 6 blocos em vez de 12 (50% menos camadas visuais)
+dec_num_heads: 6      # 192 / 6 = 32 dim por cabeça
+dec_mlp_ratio: 3
+dec_depth: 1          # 1 bloco decoder (suficiente para 7-8 caracteres)
+
+# Training
+lr: 9e-4
+weight_decay: 1e-4
+perm_num: 4           # 4 permutações suficientes para sintaxe de placas
+perm_forward: true
+perm_mirrored: true
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.1
+
+# Decoding Mode (Inference)
+decode_ar: false      # NÃO-AUTORREGRESSIVO (Paralelo: Máximo FPS)
+refine_iters: 1       # 1 iteração de correção bidirecional

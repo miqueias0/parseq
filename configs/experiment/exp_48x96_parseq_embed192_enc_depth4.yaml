@@ -1,0 +1,12 @@
+# @package _global_
+# Experimento ALPR 48x96 - parseq_embed192_enc_depth4 (2.44M params)
+# Dataset: VeSV_pad (Padrao unificado carros/motos)
+experiment_name: exp_48x96_parseq_embed192_enc_depth4
+defaults:
+  - override /model: parseq_embed192_enc_depth4
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_48x96
+
+model:
+  img_size: [ 48, 96 ]
+  max_label_length: 8

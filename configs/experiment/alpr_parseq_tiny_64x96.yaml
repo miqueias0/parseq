@@ -1,0 +1,13 @@
+# @package _global_
+experiment_name: alpr_parseq_tiny_64x96
+experiment: alpr_parseq_tiny_64x96
+# PARSeq Tiny ALPR - Resolução 64x96, Patch [8, 8] (96 tokens)
+# Maior resolução vertical para placas de 2 linhas (motos) sem aumentar o número de tokens
+defaults:
+  - override /model: parseq_alpr_tiny
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 64, 96 ]
+  patch_size: [ 8, 8 ]
+  max_label_length: 8

@@ -1,0 +1,28 @@
+name: parseq-alpr-tiny
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data & Geometry
+patch_size: [ 6, 8 ]  # [ height, width ]
+
+# Architecture (Tiny ALPR)
+embed_dim: 192
+enc_num_heads: 3      # 192 / 3 = 64 dim por cabeça (atenção mais expressiva por cabeça)
+enc_mlp_ratio: 3
+enc_depth: 6
+dec_num_heads: 6
+dec_mlp_ratio: 3
+dec_depth: 1
+
+# Training
+lr: 9e-4
+weight_decay: 1e-4
+perm_num: 4
+perm_forward: true
+perm_mirrored: true
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.1
+
+# Decoding Mode (Inference)
+decode_ar: false      # NÃO-AUTORREGRESSIVO
+refine_iters: 1

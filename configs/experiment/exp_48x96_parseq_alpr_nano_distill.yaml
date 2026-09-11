@@ -1,0 +1,20 @@
+# @package _global_
+# Experimento ALPR 48x96 com Destilação de Conhecimento
+# Aluno: parseq_alpr_nano (1.70M params)
+# Professor: configs/model/parseq.yaml (23.8M params, carregado de checkpoint ou pretrained)
+# Dataset: VeSV_pad (Padrão unificado carros/motos)
+experiment_name: exp_48x96_parseq_alpr_nano_distill
+defaults:
+  - override /model: parseq_alpr_nano
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_48x96
+
+model:
+  _target_: strhub.models.parseq.distill_system.PARSeqDistill
+  img_size: [ 48, 96 ]
+  max_label_length: 8
+  alpha: 0.5               # Peso da destilação (0.5 = balanço entre CE e KD)
+  temperature: 2.0         # Temperatura do softmax (Hinton KD)
+  use_teacher_conf: true   # Ponderação pela confiança do professor (sviptr-distill)
+  distill_mode: perms      # perms | nar | both
+  teacher_ckpt: null       # Passe via CLI: model.teacher_ckpt=/caminho/pro/teacher.ckpt

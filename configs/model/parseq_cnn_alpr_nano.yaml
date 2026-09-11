@@ -1,0 +1,48 @@
+name: parseq-cnn-alpr-nano
+_target_: strhub.models.parseq_hybrid.system.PARSeq
+
+# Data & Geometry
+patch_size: [ 4, 8 ]
+
+# Hiperparâmetros de Destilação (sviptr-distill)
+# Professor: SEMPRE configs/model/parseq.yaml
+teacher_ckpt: null             # Caminho para checkpoint do professor (.ckpt ou .pth) ou 'pretrained=parseq'
+alpha: 0.2                     # 0.0 = só rótulo real (CE), 1.0 = só destilação (KD)
+temperature: 1.0               # Temperatura de suavização de softmax (Hinton KD)
+use_teacher_conf: true         # Ponderar por confiança do professor em cada placa
+distill_mode: perms            # perms (todas as permutações), nar (apenas paralelo), ou both
+teacher_img_size: [ 32, 128 ]  # Resolução esperada pelo professor (redimensiona via interpolação se aluno for diferente)
+
+# CNN Backbone (RepViT ultra-leve)
+backbone: repvit_m0_9
+pretrained_backbone: true
+dw_stride: [ 1, 2 ]
+pos_embed_type: learned
+#block_type: hybrid
+
+# Architecture (Ultra-rápido para CPU / Edge / Embarcado)
+embed_dim: 192
+enc_num_heads: 3
+enc_mlp_ratio: 2
+#enc_depth: 0          # Pure CNN
+enc_depth: 2          # Pure CNN
+#dec_num_heads: 3
+dec_num_heads: 6
+dec_mlp_ratio: 2
+#dec_mlp_ratio: 4
+#dec_depth: 1
+dec_depth: 1
+
+# Training
+lr: 1.2e-3
+weight_decay: 1e-5
+perm_num: 6
+perm_forward: true
+perm_mirrored: true
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.0
+
+# Decoding Mode (Inference: Não-autorregressivo, sem iteração)
+decode_ar: false
+refine_iters: 1

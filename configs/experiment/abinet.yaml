@@ -1,3 +1,5 @@
 # @package _global_
+experiment_name: abinet
+experiment: abinet
 defaults:
   - override /model: abinet

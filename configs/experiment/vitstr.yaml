@@ -1,4 +1,6 @@
 # @package _global_
+experiment_name: vitstr
+experiment: vitstr
 defaults:
   - override /model: vitstr
 

@@ -1,0 +1,13 @@
+# @package _global_
+experiment_name: alpr_parseq_car_32x96
+experiment: alpr_parseq_car_32x96
+# PARSeq ALPR Especializado em Carros (1 Linha) - Proporção 3:1
+# 32x96 com patch [4, 8] -> (32/4)*(96/8) = 8*12 = 96 tokens
+defaults:
+  - override /model: parseq_alpr_fast
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 32, 96 ]
+  patch_size: [ 4, 8 ]
+  max_label_length: 8

@@ -1,0 +1,13 @@
+# @package _global_
+experiment_name: alpr_parseq_small_64x96
+experiment: alpr_parseq_small_64x96
+# PARSeq Small ALPR - Resolução 64x96, Patch [8, 8] (96 tokens)
+# Modelo balanceado com maior resolução vertical para motos desafiadoras
+defaults:
+  - override /model: parseq_alpr_small
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 64, 96 ]
+  patch_size: [ 8, 8 ]
+  max_label_length: 8

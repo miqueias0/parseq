@@ -1,0 +1,11 @@
+# @package _global_
+# Experimento ALPR 64x96 - ALPR Small (Hybrid CNN+2ViT, embed 256)
+experiment_name: exp_64x96_parseq_cnn_alpr_small
+defaults:
+  - override /model: parseq_cnn_alpr_small
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_64x96
+
+model:
+  img_size: [ 64, 96 ]
+  max_label_length: 8

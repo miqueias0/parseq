@@ -1,0 +1,27 @@
+# 1-Var: Muda dec_num_heads para 3 (dk=128)
+name: parseq-dec-heads3
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data
+patch_size: [4, 8]
+
+# Architecture
+embed_dim: 384
+enc_num_heads: 6
+enc_mlp_ratio: 4
+enc_depth: 12
+dec_num_heads: 3
+dec_mlp_ratio: 4
+dec_depth: 1
+
+# Training
+lr: 0.00045
+weight_decay: 0.001
+perm_num: 4
+perm_forward: true
+perm_mirrored: true
+dropout: 0.15
+
+# Decoding mode (test)
+decode_ar: false
+refine_iters: 1

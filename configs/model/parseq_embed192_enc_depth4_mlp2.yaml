@@ -1,0 +1,27 @@
+# 3-Var: embed_dim 192 + enc_depth 4 + mlp 2
+name: parseq-embed192-enc-depth4-mlp2
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data
+patch_size: [4, 8]
+
+# Architecture
+embed_dim: 192
+enc_num_heads: 6
+enc_mlp_ratio: 2
+enc_depth: 4
+dec_num_heads: 12
+dec_mlp_ratio: 2
+dec_depth: 1
+
+# Training
+lr: 0.0012
+weight_decay: 1e-05
+perm_num: 2
+perm_forward: true
+perm_mirrored: true
+dropout: 0.0
+
+# Decoding mode (test)
+decode_ar: false
+refine_iters: 1

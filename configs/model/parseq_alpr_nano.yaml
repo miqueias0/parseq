@@ -1,0 +1,28 @@
+name: parseq-alpr-nano
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data & Geometry
+patch_size: [ 6, 8 ]  # [ height, width ]
+
+# Architecture (Ultra-rápido para CPU / Edge / Embarcado)
+embed_dim: 192
+enc_num_heads: 3
+enc_mlp_ratio: 2      # MLP mais compacto (192 * 2 = 384)
+enc_depth: 4          # 4 camadas de encoder para menor latência
+dec_num_heads: 3
+dec_mlp_ratio: 2
+dec_depth: 1
+
+# Training
+lr: 1.2e-3
+weight_decay: 1e-5
+perm_num: 2
+perm_forward: true
+perm_mirrored: true
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.0
+
+# Decoding Mode (Inference)
+decode_ar: false      # NÃO-AUTORREGRESSIVO
+refine_iters: 0       # Zero iterações de refinamento: disparo único direto (máximo FPS possível)

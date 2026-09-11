@@ -4,6 +4,14 @@ _target_: strhub.models.parseq.system.PARSeq
 # Data
 patch_size: [ 4, 8 ]  # [ height, width ]
 #patch_size: [ 8, 8 ]  # [ height, width ]
+# Hiperparâmetros de Destilação (sviptr-distill)
+# Professor: SEMPRE configs/model/parseq.yaml
+teacher_ckpt: null             # Caminho para checkpoint do professor (.ckpt ou .pth) ou 'pretrained=parseq'
+alpha: 0.3                     # 0.0 = só rótulo real (CE), 1.0 = só destilação (KD)
+temperature: 1.5               # Temperatura de suavização de softmax (Hinton KD)
+use_teacher_conf: true         # Ponderar por confiança do professor em cada placa
+distill_mode: perms            # perms (todas as permutações), nar (apenas paralelo), ou both
+teacher_img_size: [ 32, 128 ]  # Resolução esperada pelo professor (redimensiona via interpolação se aluno for diferente)
 
 # Architecture
 embed_dim: 384
@@ -16,11 +24,14 @@ dec_depth: 1
 
 # Training
 lr: 7e-4
-perm_num: 6
+weight_decay: 1e-3
+perm_num: 4
 perm_forward: true
 perm_mirrored: true
-dropout: 0.1
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.15
 
 # Decoding mode (test)
-decode_ar: true
-refine_iters: 1
+decode_ar: false
+refine_iters: 0

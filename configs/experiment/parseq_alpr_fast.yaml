@@ -1,0 +1,12 @@
+# @package _global_
+experiment_name: parseq_alpr_fast
+experiment: parseq_alpr_fast
+# Experimento recomendado para ALPR de Alto FPS (Unificado Carro + Moto)
+defaults:
+  - override /model: parseq_alpr_fast
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 48, 96 ]        # [ height, width ] - Resolução unificada para 1 e 2 linhas
+  patch_size: [ 6, 8 ]        # 8 x 12 = 96 tokens (25% menos tokens que o padrão 128)
+  max_label_length: 8         # 7 chars (Mercosul/Brasil) + 1 EOS

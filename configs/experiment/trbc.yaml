@@ -1,4 +1,6 @@
 # @package _global_
+experiment_name: trbc
+experiment: trbc
 defaults:
   - override /model: trba
 

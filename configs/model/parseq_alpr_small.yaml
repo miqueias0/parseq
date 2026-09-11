@@ -1,0 +1,28 @@
+name: parseq-alpr-small
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data & Geometry
+patch_size: [ 6, 8 ]  # [ height, width ]
+
+# Architecture (Capacidade Intermediária ALPR - ~6M parâmetros)
+embed_dim: 256
+enc_num_heads: 8      # 256 / 8 = 32 dim por cabeça
+enc_mlp_ratio: 3
+enc_depth: 8          # 8 camadas de encoder
+dec_num_heads: 8
+dec_mlp_ratio: 3
+dec_depth: 1
+
+# Training
+lr: 7e-4
+weight_decay: 1e-4
+perm_num: 4
+perm_forward: true
+perm_mirrored: true
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.1
+
+# Decoding Mode (Inference)
+decode_ar: false      # NÃO-AUTORREGRESSIVO
+refine_iters: 1

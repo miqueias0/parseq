@@ -1,0 +1,31 @@
+name: alpr_parseq
+_target_: strhub.models.alpr_parseq.system.ALPRPARSeq
+
+# Resolution and Spatial Grid (8x16 = 128 visual tokens)
+img_size: [ 32, 128 ]  # [ height, width ]
+target_grid: [ 8, 16 ]
+
+# Modular Encoder (CNN + ViT or CNN-Only)
+embed_dim: 384
+num_cnn_stages: 4
+num_vit_layers: 4
+backbone_type: custom_cnn  # Options: 'custom_cnn', 'mobilenetv3', 'repvgg', 'repvit', 'resnet18'
+enc_num_heads: 6
+enc_mlp_ratio: 4
+
+# Fast ALPR Decoder
+dec_num_heads: 12
+dec_mlp_ratio: 4
+dec_depth: 1
+
+# Training
+lr: 7e-4
+perm_num: 6
+perm_forward: true
+perm_mirrored: true
+dropout: 0.1
+
+# ALPR Domain Optimization
+max_label_length: 7  # Exactly 7 characters + 1 EOS = 8 steps max
+decode_ar: true
+refine_iters: 0      # Zero refinement for maximum FPS

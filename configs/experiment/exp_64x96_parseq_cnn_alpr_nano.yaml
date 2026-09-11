@@ -1,0 +1,11 @@
+# @package _global_
+# Experimento ALPR 64x96 - ALPR Nano (Pure CNN, embed 192, 0 refine, max FPS)
+experiment_name: exp_64x96_parseq_cnn_alpr_nano
+defaults:
+  - override /model: parseq_cnn_alpr_nano
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_64x96
+
+model:
+  img_size: [ 64, 96 ]
+  max_label_length: 8

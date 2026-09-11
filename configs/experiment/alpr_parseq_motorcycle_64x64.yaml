@@ -1,0 +1,13 @@
+# @package _global_
+experiment_name: alpr_parseq_motorcycle_64x64
+experiment: alpr_parseq_motorcycle_64x64
+# PARSeq ALPR Especializado em Motos (2 Linhas) - Formato Quadrado 1:1
+# 64x64 com patch [8, 8] -> (64/8)*(64/8) = 8*8 = 64 tokens (Ultra-rápido: -50% tokens que o PARSeq base)
+defaults:
+  - override /model: parseq_alpr_fast
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 64, 64 ]
+  patch_size: [ 8, 8 ]
+  max_label_length: 8

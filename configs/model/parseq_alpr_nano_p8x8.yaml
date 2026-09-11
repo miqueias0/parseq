@@ -1,0 +1,27 @@
+# Multi-Var: Nano adaptado para patch [8, 8]
+name: parseq-alpr-nano-p8x8
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data
+patch_size: [8, 8]
+
+# Architecture
+embed_dim: 192
+enc_num_heads: 3
+enc_mlp_ratio: 2
+enc_depth: 4
+dec_num_heads: 3
+dec_mlp_ratio: 2
+dec_depth: 1
+
+# Training
+lr: 0.0012
+weight_decay: 1e-05
+perm_num: 2
+perm_forward: true
+perm_mirrored: true
+dropout: 0.0
+
+# Decoding mode (test)
+decode_ar: false
+refine_iters: 1

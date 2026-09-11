@@ -1,0 +1,12 @@
+# @package _global_
+# Experimento ALPR 64x96 - parseq_dec_mlp2 (23.20M params)
+# Dataset: motorcycle_pad (Especializado para motos desafiadoras de 2 linhas)
+experiment_name: exp_64x96_parseq_dec_mlp2
+defaults:
+  - override /model: parseq_dec_mlp2
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_64x96
+
+model:
+  img_size: [ 64, 96 ]
+  max_label_length: 8

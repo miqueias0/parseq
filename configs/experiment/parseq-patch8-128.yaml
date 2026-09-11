@@ -1,4 +1,6 @@
 # @package _global_
+experiment_name: parseq-patch8-128
+experiment: parseq-patch8-128
 defaults:
   - override /model: parseq
 

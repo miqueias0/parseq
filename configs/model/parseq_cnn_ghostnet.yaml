@@ -1,0 +1,34 @@
+name: parseq-cnn-ghostnet
+_target_: strhub.models.parseq_hybrid.system.PARSeq
+
+# Data & Geometry
+patch_size: [ 4, 8 ]
+
+# CNN Backbone (GhostNet - Operações baratas)
+backbone: ghostnet_100
+pretrained_backbone: false
+dw_stride: [ 1, 2 ]
+pos_embed_type: learned
+
+# Architecture
+embed_dim: 384
+enc_num_heads: 6
+enc_mlp_ratio: 4
+enc_depth: 0          # Pure CNN
+dec_num_heads: 12
+dec_mlp_ratio: 4
+dec_depth: 1
+
+# Training
+lr: 5e-4
+weight_decay: 1e-4
+perm_num: 4
+perm_forward: true
+perm_mirrored: true
+perm_forward_weight: 2.0
+label_smoothing: 0.05
+dropout: 0.1
+
+# Decoding mode (inference)
+decode_ar: false
+refine_iters: 1

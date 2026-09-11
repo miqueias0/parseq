@@ -1,0 +1,11 @@
+# @package _global_
+# Experimento ALPR 48x96 - CNN MobileNetV3 Small
+experiment_name: exp_48x96_parseq_cnn_mobilenetv3_small
+defaults:
+  - override /model: parseq_cnn_mobilenetv3_small
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_48x96
+
+model:
+  img_size: [ 48, 96 ]
+  max_label_length: 8

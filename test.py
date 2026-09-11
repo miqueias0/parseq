@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import argparse
+import os.path
 import string
 import sys
 from dataclasses import dataclass
@@ -81,15 +82,19 @@ def main():
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
 
-    charset_test = string.digits + string.ascii_lowercase
-    if args.cased:
-        charset_test += string.ascii_uppercase
-    if args.punctuation:
-        charset_test += string.punctuation
+    # charset_test = string.digits + string.ascii_lowercase
+    # if args.cased:
+    #     charset_test += string.ascii_uppercase
+    # if args.punctuation:
+    #     charset_test += string.punctuation
+    charset_test = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     kwargs.update({'charset_test': charset_test})
     print(f'Additional keyword arguments: {kwargs}')
 
     model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
+    ckpt = torch.load(args.checkpoint, map_location=args.device)
+    torch.save(ckpt['state_dict'], f'{os.path.basename(args.checkpoint)}.pt')
+    print(model)
     hp = model.hparams
     datamodule = SceneTextDataModule(
         args.data_root,

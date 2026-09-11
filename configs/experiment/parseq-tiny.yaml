@@ -1,4 +1,6 @@
 # @package _global_
+experiment_name: parseq-tiny
+experiment: parseq-tiny
 defaults:
   - override /model: parseq
 

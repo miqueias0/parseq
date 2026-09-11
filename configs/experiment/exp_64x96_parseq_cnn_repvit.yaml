@@ -1,0 +1,11 @@
+# @package _global_
+# Experimento ALPR 64x96 - RepViT Pure CNN (Motos 2 linhas / Carros)
+experiment_name: exp_64x96_parseq_cnn_repvit
+defaults:
+  - override /model: parseq_cnn_repvit
+  - override /charset: 36_uppercase
+  - override /dataset: VeSV_pad_64x96
+
+model:
+  img_size: [ 64, 96 ]
+  max_label_length: 8

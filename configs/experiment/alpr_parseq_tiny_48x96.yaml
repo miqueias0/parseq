@@ -1,0 +1,12 @@
+# @package _global_
+experiment_name: alpr_parseq_tiny_48x96
+experiment: alpr_parseq_tiny_48x96
+# PARSeq Tiny ALPR - Resolução 48x96, Patch [6, 8] (96 tokens)
+defaults:
+  - override /model: parseq_alpr_tiny
+  - override /charset: 36_uppercase
+
+model:
+  img_size: [ 48, 96 ]
+  patch_size: [ 6, 8 ]
+  max_label_length: 8

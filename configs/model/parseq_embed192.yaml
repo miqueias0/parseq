@@ -1,0 +1,27 @@
+# 1-Var: Muda embed_dim para 192 (heads 6/12 mantidos)
+name: parseq-embed192
+_target_: strhub.models.parseq.system.PARSeq
+
+# Data
+patch_size: [4, 8]
+
+# Architecture
+embed_dim: 192
+enc_num_heads: 6
+enc_mlp_ratio: 4
+enc_depth: 12
+dec_num_heads: 12
+dec_mlp_ratio: 4
+dec_depth: 1
+
+# Training
+lr: 0.0009
+weight_decay: 0.0001
+perm_num: 4
+perm_forward: true
+perm_mirrored: true
+dropout: 0.1
+
+# Decoding mode (test)
+decode_ar: false
+refine_iters: 1
