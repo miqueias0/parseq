@@ -64,3 +64,14 @@ def crnn(pretrained: bool = False, **kwargs):
     @param pretrained: (bool) Use pretrained weights
     """
     return create_model('crnn', pretrained, **kwargs)
+
+
+def alpr_parseq(pretrained: bool = False, decode_ar: bool = True, refine_iters: int = 0, **kwargs):
+    """
+    ALPR-PARSeq model optimized for license plates (max_label_length=7, refine_iters=0)
+    @param pretrained: (bool) Use pretrained weights
+    @param decode_ar: (bool) use AR decoding
+    @param refine_iters: (int) number of refinement iterations to use (0 for fast inference)
+    """
+    return create_model('alpr_parseq', pretrained, decode_ar=decode_ar, refine_iters=refine_iters, **kwargs)
+

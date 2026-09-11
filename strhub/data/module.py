@@ -25,9 +25,9 @@ from .dataset import LmdbDataset, build_tree_dataset
 
 
 class SceneTextDataModule(pl.LightningDataModule):
-    TEST_BENCHMARK_SUB = ('motorcycle_224x224_pad','motorcycle_pad','RodoSol_pad')
-    TEST_BENCHMARK = ("motorcycle_224x224_pad",)
-    TEST_NEW = ('motorcycle_224x224_pad',)
+    TEST_BENCHMARK_SUB = ('RodoSol_pad', 'VeSV_pad_48x96', 'VeSV_pad_64x96')
+    TEST_BENCHMARK = ("VeSV_pad",)
+    TEST_NEW = ('VeSV_pad',)
     TEST_ALL = tuple(set(TEST_BENCHMARK_SUB + TEST_BENCHMARK + TEST_NEW))
 
     def __init__(

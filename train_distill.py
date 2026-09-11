@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 # Scene Text Recognition Model Hub
 # Copyright 2022 Darwin Bautista
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Distillation Training Runner for Custom PARSeq Models
+
 import math
 from pathlib import Path
 
@@ -21,7 +11,6 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, open_dict
 
 import torch
-
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -31,23 +20,7 @@ from pytorch_lightning.utilities.model_summary import summarize
 from strhub.data.module import SceneTextDataModule
 from strhub.models.base import BaseSystem
 from strhub.models.utils import get_pretrained_weights
-
-
-# Copied from OneCycleLR
-def _annealing_cos(start, end, pct):
-    'Cosine anneal from `start` to `end` as pct goes from 0.0 to 1.0.'
-    cos_out = math.cos(math.pi * pct) + 1
-    return end + (start - end) / 2.0 * cos_out
-
-
-def get_swa_lr_factor(warmup_pct, swa_epoch_start, div_factor=25, final_div_factor=1e4) -> float:
-    """Get the SWA LR factor for the given `swa_epoch_start`. Assumes OneCycleLR Scheduler."""
-    total_steps = 1000  # Can be anything. We use 1000 for convenience.
-    start_step = int(total_steps * warmup_pct) - 1
-    end_step = total_steps - 1
-    step_num = int(total_steps * swa_epoch_start) - 1
-    pct = (step_num - start_step) / (end_step - start_step)
-    return _annealing_cos(1, 1 / (div_factor * final_div_factor), pct)
+from train import get_swa_lr_factor
 
 
 @hydra.main(config_path='configs', config_name='main', version_base='1.2')
@@ -56,6 +29,42 @@ def main(config: DictConfig):
     with open_dict(config):
         # Resolve absolute path to data.root_dir
         config.data.root_dir = hydra.utils.to_absolute_path(config.data.root_dir)
+
+        # Configurações de Destilação
+        # Redireciona o target do modelo para o sistema de destilação
+        config.model._target_ = 'strhub.models.parseq.distill_system.PARSeqDistill'
+
+        # Repassa opções de destilação da linha de comando para o modelo
+        if 'teacher_ckpt' in config:
+            config.model.teacher_ckpt = config.teacher_ckpt
+        elif 'teacher_ckpt' not in config.model:
+            config.model.teacher_ckpt = None
+
+        if 'alpha' in config:
+            config.model.alpha = config.alpha
+        elif 'alpha' not in config.model:
+            config.model.alpha = 0.5
+
+        if 'temperature' in config:
+            config.model.temperature = config.temperature
+        elif 'temperature' not in config.model:
+            config.model.temperature = 2.0
+
+        if 'use_teacher_conf' in config:
+            config.model.use_teacher_conf = config.use_teacher_conf
+        elif 'use_teacher_conf' not in config.model:
+            config.model.use_teacher_conf = True
+
+        if 'distill_mode' in config:
+            config.model.distill_mode = config.distill_mode
+        elif 'distill_mode' not in config.model:
+            config.model.distill_mode = 'perms'
+
+        # Atualiza o nome do modelo para identificar saídas de destilação
+        model_name = config.model.get('name', 'parseq')
+        if not model_name.endswith('-distill'):
+            config.model.name = f"{model_name}-distill"
+
         # Special handling for GPU-affected config
         gpu = config.trainer.get('accelerator') == 'gpu'
         devices = config.trainer.get('devices', 0)
@@ -74,28 +83,21 @@ def main(config: DictConfig):
     if config.model.get('perm_mirrored', False):
         assert config.model.perm_num % 2 == 0, 'perm_num should be even if perm_mirrored = True'
 
+    print(f"\n========================================================")
+    print(f" Iniciando Treino com Destilação:")
+    print(f" Aluno: {config.model.name}")
+    print(f" Professor: configs/model/parseq.yaml (ckpt: {config.model.teacher_ckpt})")
+    print(f" Alpha: {config.model.alpha} | Temp: {config.model.temperature} | Conf: {config.model.use_teacher_conf}")
+    print(f"========================================================\n")
+
     model: BaseSystem = hydra.utils.instantiate(config.model)
-    # If specified, use pretrained weights to initialize the model
+
+    # Se pretrained especificado para o aluno
     if config.pretrained is not None:
-        m = model.model if config.model._target_.endswith('PARSeq') else model
-        if Path(config.pretrained).is_file():
-            ckpt = torch.load(config.pretrained, map_location='cpu')
-            state_dict = ckpt.get('state_dict', ckpt)
+        model.model.load_state_dict(get_pretrained_weights(config.pretrained))
 
-            # Extrai apenas os pesos pertencentes ao modelo do aluno
-            clean_state_dict = {}
-            for k, v in state_dict.items():
-                if k.startswith('model.'):
-                    clean_state_dict[k.removeprefix('model.')] = v
-                elif not k.startswith('teacher.') and k != 'char_remap':
-                    clean_state_dict[k] = v
-
-            m.load_state_dict(clean_state_dict, strict=False)
-            print(f"\n[OK] Pesos locais do aluno carregados com sucesso de:\n     {config.pretrained}\n")
-        else:
-            m.load_state_dict(get_pretrained_weights(config.pretrained))
-    
     print(model)
+
     print(summarize(model, max_depth=2))
 
     datamodule: SceneTextDataModule = hydra.utils.instantiate(config.data)
