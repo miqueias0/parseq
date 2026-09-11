@@ -7,11 +7,11 @@ defaults:
 model:
   _convert_: all
   img_size: [ 32, 128 ]  # [ height, width ]
-  max_label_length: 25
+  max_label_length: 7
   # The ordering in charset_train matters. It determines the token IDs assigned to each character.
   charset_train: ???
   # For charset_test, ordering doesn't matter.
-  charset_test: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+  charset_test: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
   batch_size: 128
   weight_decay: 0.0
 #  weight_decay: 1e-4
