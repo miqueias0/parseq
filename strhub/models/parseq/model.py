@@ -72,7 +72,13 @@ class PARSeq(nn.Module):
 
     @property
     def _device(self) -> torch.device:
-        return next(self.head.parameters(recurse=False)).device
+        try:
+            return next(self.head.parameters(recurse=False)).device
+        except StopIteration:
+            try:
+                return next(self.head.buffers(recurse=False)).device
+            except StopIteration:
+                return self.pos_queries.device
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -108,16 +114,17 @@ class PARSeq(nn.Module):
         bs = images.shape[0]
         # +1 for <eos> at end of sequence.
         num_steps = max_length + 1
+        dev = images.device
         memory = self.encode(images)
 
         # Query positions up to `num_steps`
         pos_queries = self.pos_queries[:, :num_steps].expand(bs, -1, -1)
 
         # Special case for the forward permutation. Faster than using `generate_attn_masks()`
-        tgt_mask = query_mask = torch.triu(torch.ones((num_steps, num_steps), dtype=torch.bool, device=self._device), 1)
+        tgt_mask = query_mask = torch.triu(torch.ones((num_steps, num_steps), dtype=torch.bool, device=dev), 1)
 
         if self.decode_ar:
-            tgt_in = torch.full((bs, num_steps), tokenizer.pad_id, dtype=torch.long, device=self._device)
+            tgt_in = torch.full((bs, num_steps), tokenizer.pad_id, dtype=torch.long, device=dev)
             tgt_in[:, 0] = tokenizer.bos_id
 
             logits = []
@@ -139,7 +146,8 @@ class PARSeq(nn.Module):
                 logits.append(p_i)
                 if j < num_steps:
                     # greedy decode. add the next token index to the target input
-                    tgt_in[:, j] = p_i.squeeze().argmax(-1)
+                    # Index [:, 0] preserves the batch dimension even when bs=1
+                    tgt_in[:, j] = p_i[:, 0].argmax(-1)
                     # Efficient batch decoding: If all output words have at least one EOS token, end decoding.
                     if testing and (tgt_in == tokenizer.eos_id).any(dim=-1).all():
                         break
@@ -147,15 +155,15 @@ class PARSeq(nn.Module):
             logits = torch.cat(logits, dim=1)
         else:
             # No prior context, so input is just <bos>. We query all positions.
-            tgt_in = torch.full((bs, 1), tokenizer.bos_id, dtype=torch.long, device=self._device)
+            tgt_in = torch.full((bs, 1), tokenizer.bos_id, dtype=torch.long, device=dev)
             tgt_out = self.decode(tgt_in, memory, tgt_query=pos_queries)
             logits = self.head(tgt_out)
 
         if self.refine_iters:
             # For iterative refinement, we always use a 'cloze' mask.
             # We can derive it from the AR forward mask by unmasking the token context to the right.
-            query_mask[torch.triu(torch.ones(num_steps, num_steps, dtype=torch.bool, device=self._device), 2)] = 0
-            bos = torch.full((bs, 1), tokenizer.bos_id, dtype=torch.long, device=self._device)
+            query_mask = tgt_mask & ~torch.triu(torch.ones((num_steps, num_steps), dtype=torch.bool, device=dev), 2)
+            bos = torch.full((bs, 1), tokenizer.bos_id, dtype=torch.long, device=dev)
             for i in range(self.refine_iters):
                 # Prior context is the previous output.
                 tgt_in = torch.cat([bos, logits[:, :-1].argmax(-1)], dim=1)

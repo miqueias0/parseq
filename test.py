@@ -75,11 +75,20 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--cased', action='store_true', default=False, help='Cased comparison')
     parser.add_argument('--punctuation', action='store_true', default=False, help='Check punctuation')
-    parser.add_argument('--new', action='store_true', default=False, help='Evaluate on new benchmark datasets')
     parser.add_argument('--rotation', type=int, default=0, help='Angle of rotation (counter clockwise) in degrees.')
     parser.add_argument('--device', default='cuda')
+    parser.add_argument('--dataset', default=None, help='Specific dataset under data_root/test/ to evaluate (e.g. VeSV_pad)')
+    parser.add_argument('--max_label_length', type=int, default=None, help='Override max_label_length')
+    parser.add_argument(
+        '--quant_method',
+        choices=['none', 'real_int8', 'smoothquant_int8', 'dynamic', 'qat'],
+        default='none',
+        help='INT8 Quantization method to evaluate',
+    )
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
+    if args.max_label_length is not None:
+        kwargs['max_label_length'] = args.max_label_length
 
     charset_test = string.digits + string.ascii_lowercase
     if args.cased:
@@ -90,6 +99,10 @@ def main():
     print(f'Additional keyword arguments: {kwargs}')
 
     model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
+    if args.quant_method != 'none':
+        from strhub.models.quantization import PARSeqQuantizer
+        print(f'Applying quantization method: {args.quant_method}...')
+        model = PARSeqQuantizer.quantize(model, method=args.quant_method, inplace=True)
     hp = model.hparams
     datamodule = SceneTextDataModule(
         args.data_root,
@@ -104,10 +117,13 @@ def main():
         rotation=args.rotation,
     )
 
-    test_set = SceneTextDataModule.TEST_BENCHMARK_SUB + SceneTextDataModule.TEST_BENCHMARK
-    if args.new:
-        test_set += SceneTextDataModule.TEST_NEW
-    test_set = sorted(set(test_set))
+    if args.dataset is not None:
+        test_set = [args.dataset]
+    else:
+        test_set = SceneTextDataModule.TEST_BENCHMARK_SUB + SceneTextDataModule.TEST_BENCHMARK
+        if args.new:
+            test_set += SceneTextDataModule.TEST_NEW
+        test_set = sorted(set(test_set))
 
     results = {}
     max_width = max(map(len, test_set))
@@ -130,12 +146,15 @@ def main():
         mean_label_length = label_length / total
         results[name] = Result(name, total, accuracy, mean_ned, mean_conf, mean_label_length)
 
-    result_groups = {
-        'Benchmark (Subset)': SceneTextDataModule.TEST_BENCHMARK_SUB,
-        'Benchmark': SceneTextDataModule.TEST_BENCHMARK,
-    }
-    if args.new:
-        result_groups.update({'New': SceneTextDataModule.TEST_NEW})
+    if args.dataset is not None:
+        result_groups = {'Custom': [args.dataset]}
+    else:
+        result_groups = {
+            'Benchmark (Subset)': SceneTextDataModule.TEST_BENCHMARK_SUB,
+            'Benchmark': SceneTextDataModule.TEST_BENCHMARK,
+        }
+        if getattr(args, 'new', False):
+            result_groups.update({'New': SceneTextDataModule.TEST_NEW})
     with open(args.checkpoint + '.log.txt', 'w') as f:
         for out in [f, sys.stdout]:
             for group, subset in result_groups.items():
