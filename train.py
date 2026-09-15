@@ -71,7 +71,10 @@ def main(config: DictConfig):
             trainer_strategy = DDPStrategy(find_unused_parameters=False, gradient_as_bucket_view=True)
             # Scale steps-based config
             config.trainer.val_check_interval //= devices
-            if config.trainer.get('max_steps', -1) > 0:
+            max_steps = config.trainer.get('max_steps', -1)
+            if max_steps is None:
+                config.trainer.max_steps = -1
+            elif config.trainer.max_steps > 0:
                 config.trainer.max_steps //= devices
 
     # Special handling for PARseq
@@ -83,14 +86,25 @@ def main(config: DictConfig):
     if config.pretrained is not None:
         m = model.model if config.model._target_.endswith('PARSeq') else model
         weights = get_pretrained_weights(config.pretrained)
-        if hasattr(m, 'pos_queries') and 'pos_queries' in weights:
-            if m.pos_queries.shape != weights['pos_queries'].shape:
-                min_len = min(m.pos_queries.shape[1], weights['pos_queries'].shape[1])
-                weights['pos_queries'] = weights['pos_queries'][:, :min_len]
-        try:
-            m.load_state_dict(weights)
-        except Exception:
-            m.load_state_dict(weights, strict=False)
+        model_state = m.state_dict()
+        filtered_weights = {}
+        for k, v in weights.items():
+            if k in model_state:
+                if v.shape == model_state[k].shape:
+                    filtered_weights[k] = v
+                else:
+                    # Pos queries slicing along sequence length dimension
+                    if k == 'pos_queries' and v.dim() == model_state[k].dim() and v.shape[0] == model_state[k].shape[0]:
+                        min_len = min(model_state[k].shape[1], v.shape[1])
+                        sliced = model_state[k].clone()
+                        sliced[:, :min_len] = v[:, :min_len]
+                        filtered_weights[k] = sliced
+                        print(f"[Pretrained] Sliced '{k}' from {list(v.shape)} to {list(sliced.shape)}")
+                    else:
+                        print(f"[Pretrained] Skipping mismatched key '{k}' (checkpoint: {list(v.shape)}, model: {list(model_state[k].shape)}) - preserving downstream initialization.")
+            else:
+                filtered_weights[k] = v
+        m.load_state_dict(filtered_weights, strict=False)
 
     # Quantization preparation for fine-tuning (QAT or Jetfire FQT)
     quant_method = config.get('quantize', None) or config.get('quant_method', None)
