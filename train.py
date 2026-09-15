@@ -57,7 +57,11 @@ def main(config: DictConfig):
         # Resolve absolute path to data.root_dir
         config.data.root_dir = hydra.utils.to_absolute_path(config.data.root_dir)
         # Special handling for GPU-affected config
-        gpu = config.trainer.get('accelerator') == 'gpu'
+        gpu = config.trainer.get('accelerator') == 'gpu' and torch.cuda.is_available()
+        if config.trainer.get('accelerator') == 'gpu' and not torch.cuda.is_available():
+            print("[Warning] GPU requested in trainer.accelerator, but CUDA is not available. Falling back to CPU.")
+            config.trainer.accelerator = 'cpu'
+            config.trainer.devices = 1
         devices = config.trainer.get('devices', 0)
         if gpu:
             # Use mixed-precision training
@@ -78,7 +82,24 @@ def main(config: DictConfig):
     # If specified, use pretrained weights to initialize the model
     if config.pretrained is not None:
         m = model.model if config.model._target_.endswith('PARSeq') else model
-        m.load_state_dict(get_pretrained_weights(config.pretrained))
+        weights = get_pretrained_weights(config.pretrained)
+        if hasattr(m, 'pos_queries') and 'pos_queries' in weights:
+            if m.pos_queries.shape != weights['pos_queries'].shape:
+                min_len = min(m.pos_queries.shape[1], weights['pos_queries'].shape[1])
+                weights['pos_queries'] = weights['pos_queries'][:, :min_len]
+        try:
+            m.load_state_dict(weights)
+        except Exception:
+            m.load_state_dict(weights, strict=False)
+
+    # Quantization preparation for fine-tuning (QAT or Jetfire FQT)
+    quant_method = config.get('quantize', None) or config.get('quant_method', None)
+    if quant_method:
+        from strhub.models.quantization import PARSeqQuantizer
+        block_size = config.get('quant_block_size', 64)
+        print(f"[Quantization] Preparing model for '{quant_method.upper()}' fine-tuning (block_size={block_size})...")
+        model = PARSeqQuantizer.quantize(model, method=quant_method, block_size=block_size)
+
     print(summarize(model, max_depth=2))
 
     datamodule: SceneTextDataModule = hydra.utils.instantiate(config.data)
