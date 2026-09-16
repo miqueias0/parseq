@@ -19,16 +19,32 @@ def main():
     parser.add_argument("--output_qdq", default="outputs/parseq_nar_qdq.onnx", help="Output path for Static QDQ ONNX model")
     parser.add_argument("--calib_dir", default=None, help="Directory of calibration images (e.g. data/test or demo_images)")
     parser.add_argument("--calib_samples", type=int, default=64, help="Number of calibration samples")
-    parser.add_argument("--calib_method", default="MinMax", choices=["MinMax", "Entropy", "Percentile"], help="Calibration method")
+    parser.add_argument(
+        "--quant_method",
+        default="none",
+        choices=["none", "ibert", "unified_int8", "real_int8", "int_flashattn", "jetfire_fqt"],
+        help="Quantization method to apply before ONNX export (ibert, unified_int8, real_int8, etc.)",
+    )
+    parser.add_argument("--block_size", type=int, default=32, help="Block size for Jetfire / INT-FlashAttention")
     args = parser.parse_args()
 
     Path(args.output_fp32).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output_int8).parent.mkdir(parents=True, exist_ok=True)
 
-    precision_str = "FP16" if args.fp16 else "FP32"
+    if args.quant_method != "none":
+        from strhub.models.utils import load_from_checkpoint
+        print(f"Loading checkpoint '{args.checkpoint}' and applying {args.quant_method.upper()}...")
+        target_model = load_from_checkpoint(args.checkpoint, max_label_length=args.max_label_length).eval().to(args.device)
+        target_model = PARSeqQuantizer.quantize(target_model, method=args.quant_method, block_size=args.block_size, inplace=True)
+        if args.quant_method != "dynamic":
+            target_model = target_model.to(args.device)
+    else:
+        target_model = args.checkpoint
+
+    precision_str = "FP16" if args.fp16 else ("INT8 (" + args.quant_method.upper() + ")" if args.quant_method != "none" else "FP32")
     print(f"[1/2] Exportando PARSeq ({args.mode.upper()}) para ONNX {precision_str}: {args.output_fp32} (device={args.device})...")
     PARSeqQuantizer.export_onnx(
-        args.checkpoint,
+        target_model,
         args.output_fp32,
         mode=args.mode,
         device=args.device,

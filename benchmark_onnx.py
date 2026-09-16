@@ -3,8 +3,53 @@
 
 import argparse
 import os
+import sys
 import time
 import numpy as np
+
+
+def setup_tensorrt_library_paths():
+    """Auto-detects and loads TensorRT, cuDNN, and cuBLAS shared libraries from pip packages."""
+    import ctypes
+
+    lib_dirs = []
+    for base in sys.path:
+        if not os.path.isdir(base):
+            continue
+        trt_dir = os.path.join(base, "tensorrt_libs")
+        if os.path.isdir(trt_dir):
+            lib_dirs.append(trt_dir)
+        nvidia_dir = os.path.join(base, "nvidia")
+        if os.path.isdir(nvidia_dir):
+            for sub in ["cudnn", "cublas", "cuda_runtime", "cufft", "curand"]:
+                sub_lib = os.path.join(nvidia_dir, sub, "lib")
+                if os.path.isdir(sub_lib):
+                    lib_dirs.append(sub_lib)
+
+    if lib_dirs:
+        old_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        new_ld = ":".join(lib_dirs) + (f":{old_ld}" if old_ld else "")
+        os.environ["LD_LIBRARY_PATH"] = new_ld
+
+        libs_to_load = [
+            "libcudart.so.12",
+            "libcublas.so.12",
+            "libcublasLt.so.12",
+            "libcudnn.so.9",
+            "libnvinfer.so.10",
+            "libnvinfer_plugin.so.10",
+        ]
+        for lib_dir in lib_dirs:
+            for lib_name in libs_to_load:
+                lib_path = os.path.join(lib_dir, lib_name)
+                if os.path.exists(lib_path):
+                    try:
+                        ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                    except Exception:
+                        pass
+
+
+setup_tensorrt_library_paths()
 import onnxruntime as ort
 
 

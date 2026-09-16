@@ -16,6 +16,9 @@ def integer_sqrt_newton_raphson(n: torch.Tensor, max_iters: int = 4) -> torch.Te
         x_{i+1} = floor((x_i + floor(n / x_i)) / 2)
     """
     orig_dtype = n.dtype
+    if torch.onnx.is_in_onnx_export() or torch.jit.is_tracing():
+        return torch.sqrt(n.float()).to(orig_dtype)
+
     # Ensure positive int64 for safe intermediate calculation
     n_int = n.clamp(min=0).to(torch.int64)
     
