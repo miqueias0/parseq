@@ -102,6 +102,8 @@ def main():
     if args.quant_method != 'none':
         from strhub.models.quantization import PARSeqQuantizer
         print(f'Applying quantization method: {args.quant_method}...')
+        if args.quant_method == 'dynamic' and 'cuda' in str(args.device):
+            print("[INFO]: 'dynamic' (torch.ao.quantization.quantize_dynamic) is CPU-only; evaluation will run on CPU.")
         model = PARSeqQuantizer.quantize(model, method=args.quant_method, inplace=True)
     hp = model.hparams
     datamodule = SceneTextDataModule(

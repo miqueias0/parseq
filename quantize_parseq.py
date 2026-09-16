@@ -237,7 +237,24 @@ def main():
     )
     results.append(base_metrics)
 
-    methods_to_run = [args.method] if not args.compare_all else ["dynamic", "real_int8", "smoothquant_int8", "onnx_int8"]
+    if args.compare_all:
+        if "cuda" in device_str:
+            log.info(
+                "Skipping 'DYNAMIC' on CUDA: PyTorch standard torch.ao.quantization.quantize_dynamic is CPU-only. "
+                "Evaluating native CUDA Tensor Core INT8 methods: REAL_INT8, SMOOTHQUANT_INT8, and ONNX_INT8."
+            )
+            methods_to_run = ["real_int8", "smoothquant_int8", "onnx_int8"]
+        else:
+            methods_to_run = ["dynamic", "real_int8", "smoothquant_int8", "onnx_int8"]
+    else:
+        if args.method == "dynamic" and "cuda" in device_str:
+            raise ValueError(
+                "PyTorch standard dynamic quantization ('dynamic' / torch.ao.quantization.quantize_dynamic) "
+                "is CPU-only and does not support the CUDA backend. "
+                "For native INT8 execution on NVIDIA GPUs with Tensor Cores, use '--method real_int8' or '--method smoothquant_int8'. "
+                "To benchmark 'dynamic' on CPU, run with '--device cpu'."
+            )
+        methods_to_run = [args.method]
 
     for m_name in methods_to_run:
         log.info(f"Configuring and profiling: {m_name.upper()}...")
@@ -285,15 +302,17 @@ def main():
                 shutil.copyfile(tmp_onnx_int8, args.export_onnx)
                 log.info(f"Saved optimized INT8 ONNX model to: {args.export_onnx}")
         else:
-            quant_m = PARSeqQuantizer.quantize(baseline_model, method=m_name, inplace=False).to(device_str)
+            quant_m = PARSeqQuantizer.quantize(baseline_model, method=m_name, inplace=False)
+            target_device = "cpu" if m_name == "dynamic" else device_str
+            quant_m = quant_m.to(target_device)
             bench = BenchmarkEngine.measure_latency_and_fps(
-                quant_m, device=device_str, batch_size=args.batch_size,
+                quant_m, device=target_device, batch_size=args.batch_size,
                 iterations=args.iterations, warmup=args.warmup, img_size=img_size
             )
             mem_mb = BenchmarkEngine.measure_model_memory_mb(quant_m)
             results.append(BenchmarkMetrics(
                 name=f"PARSeq {m_name.upper()}",
-                device=device_str.upper(),
+                device=target_device.upper(),
                 batch_size=args.batch_size,
                 latency_mean_ms=bench["mean_ms"],
                 latency_p50_ms=bench["p50_ms"],

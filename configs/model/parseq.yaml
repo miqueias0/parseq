@@ -22,5 +22,5 @@ perm_mirrored: true
 dropout: 0.1
 
 # Decoding mode (test)
-decode_ar: true
+decode_ar: false
 refine_iters: 1
