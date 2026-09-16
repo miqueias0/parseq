@@ -119,7 +119,14 @@ def export_parseq_to_onnx(
 
     if isinstance(model_or_checkpoint, str):
         decode_ar = (mode == "ar")
-        model = load_from_checkpoint(model_or_checkpoint, decode_ar=decode_ar, **extra_kwargs).eval()
+        try:
+            model = load_from_checkpoint(model_or_checkpoint, decode_ar=decode_ar, **extra_kwargs).eval()
+        except Exception as e:
+            if "size mismatch for pos_queries" in str(e) and "max_label_length" not in extra_kwargs:
+                extra_kwargs["max_label_length"] = 25
+                model = load_from_checkpoint(model_or_checkpoint, decode_ar=decode_ar, **extra_kwargs).eval()
+            else:
+                raise e
     else:
         model = model_or_checkpoint.eval()
 

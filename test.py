@@ -79,6 +79,7 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--dataset', default=None, help='Specific dataset under data_root/test/ to evaluate (e.g. VeSV_pad)')
     parser.add_argument('--max_label_length', type=int, default=None, help='Override max_label_length')
+    parser.add_argument('--new', action='store_true', default=False, help='Evaluate on new benchmark datasets')
     parser.add_argument(
         '--quant_method',
         choices=['none', 'real_int8', 'smoothquant_int8', 'unified_int8', 'int_flashattn', 'ibert', 'jetfire_fqt', 'dynamic', 'qat'],
@@ -123,13 +124,29 @@ def main():
     if args.dataset is not None:
         test_set = [args.dataset]
     else:
-        test_set = SceneTextDataModule.TEST_BENCHMARK_SUB + SceneTextDataModule.TEST_BENCHMARK
-        if args.new:
-            test_set += SceneTextDataModule.TEST_NEW
-        test_set = sorted(set(test_set))
+        from pathlib import Path
+        test_dir = Path(args.data_root) / 'test'
+        if test_dir.exists():
+            existing_subdirs = [d.name for d in test_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
+            std_set = SceneTextDataModule.TEST_BENCHMARK_SUB + SceneTextDataModule.TEST_BENCHMARK
+            if getattr(args, 'new', False):
+                std_set += SceneTextDataModule.TEST_NEW
+            common = [s for s in std_set if s in existing_subdirs]
+            if len(common) > 0:
+                test_set = sorted(set(common))
+            elif len(existing_subdirs) > 0:
+                test_set = sorted(existing_subdirs)
+            else:
+                test_set = sorted(set(std_set))
+        else:
+            test_set = SceneTextDataModule.TEST_BENCHMARK_SUB + SceneTextDataModule.TEST_BENCHMARK
+            if getattr(args, 'new', False):
+                test_set += SceneTextDataModule.TEST_NEW
+            test_set = sorted(set(test_set))
 
     results = {}
-    max_width = max(map(len, test_set))
+    max_width = max(map(len, test_set)) if len(test_set) > 0 else 10
+    eval_device = torch.device(args.device)
     for name, dataloader in datamodule.test_dataloaders(test_set).items():
         total = 0
         correct = 0
@@ -137,7 +154,7 @@ def main():
         confidence = 0
         label_length = 0
         for imgs, labels in tqdm(iter(dataloader), desc=f'{name:>{max_width}}'):
-            res = model.test_step((imgs.to(model.device), labels), -1)['output']
+            res = model.test_step((imgs.to(eval_device), labels), -1)['output']
             total += res.num_samples
             correct += res.correct
             ned += res.ned
@@ -152,18 +169,30 @@ def main():
     if args.dataset is not None:
         result_groups = {'Custom': [args.dataset]}
     else:
-        result_groups = {
-            'Benchmark (Subset)': SceneTextDataModule.TEST_BENCHMARK_SUB,
-            'Benchmark': SceneTextDataModule.TEST_BENCHMARK,
-        }
+        result_groups = {}
+        sub_bench = [s for s in SceneTextDataModule.TEST_BENCHMARK_SUB if s in results]
+        if sub_bench:
+            result_groups['Benchmark (Subset)'] = sub_bench
+        full_bench = [s for s in SceneTextDataModule.TEST_BENCHMARK if s in results]
+        if full_bench:
+            result_groups['Benchmark'] = full_bench
         if getattr(args, 'new', False):
-            result_groups.update({'New': SceneTextDataModule.TEST_NEW})
-    with open(args.checkpoint + '.log.txt', 'w') as f:
+            new_bench = [s for s in SceneTextDataModule.TEST_NEW if s in results]
+            if new_bench:
+                result_groups['New'] = new_bench
+        remaining = [s for s in results if not any(s in g for g in result_groups.values())]
+        if remaining:
+            result_groups['Evaluation'] = remaining
+
+    out_log_path = (args.checkpoint if not args.checkpoint.startswith('pretrained=') else 'parseq_eval') + '.log.txt'
+    with open(out_log_path, 'w') as f:
         for out in [f, sys.stdout]:
             for group, subset in result_groups.items():
-                print(f'{group} set:', file=out)
-                print_results_table([results[s] for s in subset], out)
-                print('\n', file=out)
+                entries = [results[s] for s in subset if s in results]
+                if entries:
+                    print(f'{group} set:', file=out)
+                    print_results_table(entries, out)
+                    print('\n', file=out)
 
 
 if __name__ == '__main__':
