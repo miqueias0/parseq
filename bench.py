@@ -38,6 +38,13 @@ def main(config: DictConfig):
     x = torch.rand(1, 3, h, w, device=device)
     model = hydra.utils.instantiate(config.model).eval().to(device)
 
+    quant_method = config.get('quantize', None) or config.get('quant_method', None)
+    if quant_method:
+        from strhub.models.quantization import PARSeqQuantizer
+        block_size = config.get('quant_block_size', 32)
+        print(f"[Benchmark] Quantizing model with '{quant_method}' (block_size={block_size})...")
+        model = PARSeqQuantizer.quantize(model, method=quant_method, block_size=block_size, inplace=True)
+
     if config.get('range', False):
         for i in range(1, 26, 4):
             timer = benchmark.Timer(stmt='model(x, len)', globals={'model': model, 'x': x, 'len': i})

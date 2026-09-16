@@ -81,10 +81,11 @@ def main():
     parser.add_argument('--max_label_length', type=int, default=None, help='Override max_label_length')
     parser.add_argument(
         '--quant_method',
-        choices=['none', 'real_int8', 'smoothquant_int8', 'dynamic', 'qat'],
+        choices=['none', 'real_int8', 'smoothquant_int8', 'unified_int8', 'int_flashattn', 'ibert', 'jetfire_fqt', 'dynamic', 'qat'],
         default='none',
         help='INT8 Quantization method to evaluate',
     )
+    parser.add_argument('--block_size', type=int, default=32, help='Block size for Jetfire / INT-FlashAttention (default: 32)')
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
     if args.max_label_length is not None:
@@ -101,10 +102,10 @@ def main():
     model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
     if args.quant_method != 'none':
         from strhub.models.quantization import PARSeqQuantizer
-        print(f'Applying quantization method: {args.quant_method}...')
+        print(f'Applying quantization method: {args.quant_method} (block_size={args.block_size})...')
         if args.quant_method == 'dynamic' and 'cuda' in str(args.device):
             print("[INFO]: 'dynamic' (torch.ao.quantization.quantize_dynamic) is CPU-only; evaluation will run on CPU.")
-        model = PARSeqQuantizer.quantize(model, method=args.quant_method, inplace=True)
+        model = PARSeqQuantizer.quantize(model, method=args.quant_method, block_size=args.block_size, inplace=True)
     hp = model.hparams
     datamodule = SceneTextDataModule(
         args.data_root,

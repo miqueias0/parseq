@@ -15,7 +15,10 @@ from .core import (
     STEQuantizeFunction,
     ste_quantize,
 )
-from .layers import QuantizedLinear, RealHardwareInt8Linear, JetfireInt8Linear, JetfireFQTFunction
+from .layers import QuantizedLinear, RealHardwareInt8Linear, JetfireInt8Linear, JetfireFQTFunction, block_quantize_2d, dequantize_blocks
+from .ibert_ops import IGELU, IExpSoftmax, ILayerNorm, integer_sqrt_newton_raphson
+from .int_attention import INT8MultiheadAttention, int_flash_attention_core, quantize_token_symmetric
+from .fused_ops import JetfireFusedGELU, JetfireFusedLayerNorm, JetfireFusedResidualAdd
 from .calibrator import ActivationCalibrator
 from .smoothquant import compute_smooth_scale, apply_smoothquant_to_parseq
 from .quantizer import PARSeqQuantizer
@@ -31,6 +34,18 @@ __all__ = [
     "RealHardwareInt8Linear",
     "JetfireInt8Linear",
     "JetfireFQTFunction",
+    "block_quantize_2d",
+    "dequantize_blocks",
+    "IGELU",
+    "IExpSoftmax",
+    "ILayerNorm",
+    "integer_sqrt_newton_raphson",
+    "INT8MultiheadAttention",
+    "int_flash_attention_core",
+    "quantize_token_symmetric",
+    "JetfireFusedGELU",
+    "JetfireFusedLayerNorm",
+    "JetfireFusedResidualAdd",
     "ActivationCalibrator",
     "compute_smooth_scale",
     "apply_smoothquant_to_parseq",

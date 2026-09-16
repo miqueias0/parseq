@@ -155,10 +155,10 @@ def main():
     parser = argparse.ArgumentParser(description="PARSeq INT8 Quantization Suite & Benchmarking")
     parser.add_argument("checkpoint", default="pretrained=parseq", nargs="?",
                         help="Model checkpoint ('pretrained=parseq', 'pretrained=parseq-tiny', or path to file)")
-    parser.add_argument("--method", choices=["real_int8", "smoothquant_int8", "dynamic", "qat", "jetfire_fqt", "onnx_int8"],
-                        default="real_int8", help="Quantization method")
-    parser.add_argument("--block_size", type=int, default=64,
-                        help="Tile block dimension for Jetfire per-block INT8 quantization")
+    parser.add_argument("--method", choices=["real_int8", "smoothquant_int8", "unified_int8", "int_flashattn", "ibert", "dynamic", "qat", "jetfire_fqt", "onnx_int8"],
+                        default="unified_int8", help="Quantization method")
+    parser.add_argument("--block_size", type=int, default=32,
+                        help="Tile block dimension for Jetfire / INT-FlashAttention per-block INT8 quantization (default: 32)")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Execution device ('cpu', 'cuda')")
     parser.add_argument("--compare_all", action="store_true", default=False,
@@ -241,17 +241,17 @@ def main():
         if "cuda" in device_str:
             log.info(
                 "Skipping 'DYNAMIC' on CUDA: PyTorch standard torch.ao.quantization.quantize_dynamic is CPU-only. "
-                "Evaluating native CUDA Tensor Core INT8 methods: REAL_INT8, SMOOTHQUANT_INT8, and ONNX_INT8."
+                "Evaluating native CUDA Tensor Core INT8 methods: UNIFIED_INT8, REAL_INT8, INT_FLASHATTN, IBERT, SMOOTHQUANT_INT8, and ONNX_INT8."
             )
-            methods_to_run = ["real_int8", "smoothquant_int8", "onnx_int8"]
+            methods_to_run = ["unified_int8", "real_int8", "int_flashattn", "ibert", "smoothquant_int8", "onnx_int8"]
         else:
-            methods_to_run = ["dynamic", "real_int8", "smoothquant_int8", "onnx_int8"]
+            methods_to_run = ["unified_int8", "real_int8", "int_flashattn", "ibert", "dynamic", "smoothquant_int8", "onnx_int8"]
     else:
         if args.method == "dynamic" and "cuda" in device_str:
             raise ValueError(
                 "PyTorch standard dynamic quantization ('dynamic' / torch.ao.quantization.quantize_dynamic) "
                 "is CPU-only and does not support the CUDA backend. "
-                "For native INT8 execution on NVIDIA GPUs with Tensor Cores, use '--method real_int8' or '--method smoothquant_int8'. "
+                "For native INT8 execution on NVIDIA GPUs with Tensor Cores, use '--method real_int8' or '--method unified_int8'. "
                 "To benchmark 'dynamic' on CPU, run with '--device cpu'."
             )
         methods_to_run = [args.method]
@@ -302,7 +302,7 @@ def main():
                 shutil.copyfile(tmp_onnx_int8, args.export_onnx)
                 log.info(f"Saved optimized INT8 ONNX model to: {args.export_onnx}")
         else:
-            quant_m = PARSeqQuantizer.quantize(baseline_model, method=m_name, inplace=False)
+            quant_m = PARSeqQuantizer.quantize(baseline_model, method=m_name, block_size=args.block_size, inplace=False)
             target_device = "cpu" if m_name == "dynamic" else device_str
             quant_m = quant_m.to(target_device)
             bench = BenchmarkEngine.measure_latency_and_fps(

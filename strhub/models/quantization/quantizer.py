@@ -195,6 +195,151 @@ class PARSeqQuantizer:
         return m
 
     @classmethod
+    def prepare_for_int_flashattn(
+        cls,
+        model: nn.Module,
+        block_size: int = 32,
+        use_ibert_exp: bool = False,
+        inplace: bool = False,
+    ) -> nn.Module:
+        """Equips PARSeq with INT-FlashAttention module (arXiv:2409.16997).
+        
+        Replaces decoder self-attention (with dynamic permutation & causal masks)
+        and cross-attention (queries attending to ViT memory) with INT8MultiheadAttention.
+        """
+        from .int_attention import INT8MultiheadAttention
+
+        m = model if inplace else copy.deepcopy(model)
+        inner = cls._get_inner_model(m)
+
+        if hasattr(inner, "decoder") and hasattr(inner.decoder, "layers"):
+            for layer in inner.decoder.layers:
+                if hasattr(layer, "self_attn") and isinstance(layer.self_attn, nn.MultiheadAttention):
+                    layer.self_attn = INT8MultiheadAttention.from_float_mha(
+                        layer.self_attn, block_size=block_size, use_ibert_exp=use_ibert_exp
+                    )
+                if hasattr(layer, "cross_attn") and isinstance(layer.cross_attn, nn.MultiheadAttention):
+                    layer.cross_attn = INT8MultiheadAttention.from_float_mha(
+                        layer.cross_attn, block_size=block_size, use_ibert_exp=use_ibert_exp
+                    )
+
+        log.info("Model successfully equipped with INT-FlashAttention.")
+        return m
+
+    @classmethod
+    def prepare_for_ibert(
+        cls,
+        model: nn.Module,
+        inplace: bool = False,
+    ) -> nn.Module:
+        """Configures PARSeq for pure integer-only arithmetic (I-BERT, ICML 2021).
+        
+        Replaces:
+            - GELU with i-GELU (2nd-order polynomial approximation).
+            - LayerNorm with ILayerNorm (Newton-Raphson integer square root).
+            - Attention with I-BERT integer exponential bit-shifting.
+        """
+        from .ibert_ops import IGELU, ILayerNorm
+        from .int_attention import INT8MultiheadAttention
+
+        m = model if inplace else copy.deepcopy(model)
+        inner = cls._get_inner_model(m)
+
+        # 1. Encoder Blocks
+        with torch.no_grad():
+            if hasattr(inner, "encoder") and hasattr(inner.encoder, "blocks"):
+                for block in inner.encoder.blocks:
+                    if hasattr(block, "norm1") and isinstance(block.norm1, nn.LayerNorm):
+                        iln = ILayerNorm(block.norm1.normalized_shape[0], eps=block.norm1.eps)
+                        iln.weight.copy_(block.norm1.weight)
+                        iln.bias.copy_(block.norm1.bias)
+                        block.norm1 = iln
+                    if hasattr(block, "norm2") and isinstance(block.norm2, nn.LayerNorm):
+                        iln = ILayerNorm(block.norm2.normalized_shape[0], eps=block.norm2.eps)
+                        iln.weight.copy_(block.norm2.weight)
+                        iln.bias.copy_(block.norm2.bias)
+                        block.norm2 = iln
+                    if hasattr(block, "mlp") and hasattr(block.mlp, "act"):
+                        block.mlp.act = IGELU()
+
+                if hasattr(inner.encoder, "norm") and isinstance(inner.encoder.norm, nn.LayerNorm):
+                    iln = ILayerNorm(inner.encoder.norm.normalized_shape[0], eps=inner.encoder.norm.eps)
+                    iln.weight.copy_(inner.encoder.norm.weight)
+                    iln.bias.copy_(inner.encoder.norm.bias)
+                    inner.encoder.norm = iln
+
+            # 2. Decoder Layers
+            if hasattr(inner, "decoder") and hasattr(inner.decoder, "layers"):
+                for layer in inner.decoder.layers:
+                    # Attention with i-exp bitshifts
+                    if hasattr(layer, "self_attn") and isinstance(layer.self_attn, nn.MultiheadAttention):
+                        layer.self_attn = INT8MultiheadAttention.from_float_mha(layer.self_attn, use_ibert_exp=True)
+                    if hasattr(layer, "cross_attn") and isinstance(layer.cross_attn, nn.MultiheadAttention):
+                        layer.cross_attn = INT8MultiheadAttention.from_float_mha(layer.cross_attn, use_ibert_exp=True)
+
+                    # Norms
+                    for norm_name in ["norm1", "norm2", "norm_q", "norm_c"]:
+                        if hasattr(layer, norm_name) and isinstance(getattr(layer, norm_name), nn.LayerNorm):
+                            ln = getattr(layer, norm_name)
+                            iln = ILayerNorm(ln.normalized_shape[0], eps=ln.eps)
+                            iln.weight.copy_(ln.weight)
+                            iln.bias.copy_(ln.bias)
+                            setattr(layer, norm_name, iln)
+
+                    # GELU
+                    layer.activation = IGELU()
+
+                if hasattr(inner.decoder, "norm") and isinstance(inner.decoder.norm, nn.LayerNorm):
+                    ln = inner.decoder.norm
+                    iln = ILayerNorm(ln.normalized_shape[0], eps=ln.eps)
+                    iln.weight.copy_(ln.weight)
+                    iln.bias.copy_(ln.bias)
+                    inner.decoder.norm = iln
+
+        log.info("Model successfully configured for I-BERT Integer-Only execution.")
+        return m
+
+    @classmethod
+    def prepare_for_unified_int8(
+        cls,
+        model: nn.Module,
+        calibrator: Optional[ActivationCalibrator] = None,
+        alpha: float = 0.5,
+        block_size: int = 32,
+        use_ibert_exp: bool = False,
+        inplace: bool = False,
+    ) -> nn.Module:
+        """Unifies Jetfire INT8 Data Flow + INT-FlashAttention + Non-Linear Fused Operators.
+        
+        Step 1: Real Hardware INT8 Linear conversion for all GEMMs.
+        Step 2: INT-FlashAttention for decoder self and cross attention.
+        Step 3: Fused / Integer GELU and LayerNorm replacements.
+        """
+        m = model if inplace else copy.deepcopy(model)
+        # 1. Convert Linear to Real INT8
+        m = cls.convert_to_real_int8(m, calibrator=calibrator, alpha=alpha, apply_smooth=True, inplace=True)
+        # 2. Convert Attention to INT-FlashAttention
+        m = cls.prepare_for_int_flashattn(m, block_size=block_size, use_ibert_exp=use_ibert_exp, inplace=True)
+        # 3. Convert Non-linears to Fused / Integer ops
+        from .fused_ops import JetfireFusedGELU, JetfireFusedLayerNorm
+        inner = cls._get_inner_model(m)
+
+        with torch.no_grad():
+            if hasattr(inner, "decoder") and hasattr(inner.decoder, "layers"):
+                for layer in inner.decoder.layers:
+                    layer.activation = JetfireFusedGELU(block_size=block_size)
+                    for norm_name in ["norm1", "norm2", "norm_q", "norm_c"]:
+                        if hasattr(layer, norm_name) and isinstance(getattr(layer, norm_name), nn.LayerNorm):
+                            ln = getattr(layer, norm_name)
+                            fln = JetfireFusedLayerNorm(ln.normalized_shape[0], eps=ln.eps, block_size=block_size)
+                            fln.weight.copy_(ln.weight)
+                            fln.bias.copy_(ln.bias)
+                            setattr(layer, norm_name, fln)
+
+        log.info("Model successfully converted to Unified INT8 Architecture (Jetfire + INT-FlashAttention + I-BERT).")
+        return m
+
+    @classmethod
     def quantize(
         cls,
         model: nn.Module,
@@ -202,7 +347,8 @@ class PARSeqQuantizer:
         calibrator: Optional[ActivationCalibrator] = None,
         alpha: float = 0.5,
         use_per_block: bool = False,
-        block_size: int = 64,
+        block_size: int = 32,
+        use_ibert_exp: bool = False,
         inplace: bool = False,
     ) -> nn.Module:
         """Unified entry point for PARSeq quantization.
@@ -212,13 +358,17 @@ class PARSeqQuantizer:
             method: Quantization strategy:
                 - "real_int8": Native hardware INT8 with zero memory overhead.
                 - "smoothquant_int8": SmoothQuant outlier migration + Real Hardware INT8.
-                - "qat": Quantization-Aware Training model for fine-tuning.
+                - "unified_int8": Jetfire INT8 Linear + INT-FlashAttention + Fused Non-linears.
+                - "int_flashattn": INT-FlashAttention attention module.
+                - "ibert": Integer-only i-GELU, i-Softmax, and i-LayerNorm.
                 - "jetfire_fqt": Direct INT8 Fully Quantized Training (FQT) with INT8 forward & backward.
+                - "qat": Quantization-Aware Training model for fine-tuning.
                 - "dynamic": PyTorch standard dynamic INT8.
             calibrator: Calibration data statistics for SmoothQuant.
             alpha: SmoothQuant alpha hyperparameter.
             use_per_block: Whether to use Jetfire per-block tiling.
             block_size: Tile dimension for Jetfire per-block quantization.
+            use_ibert_exp: Use I-BERT bit-shift exp in attention.
             inplace: Whether to modify model in place.
         """
         method = method.lower()
@@ -226,6 +376,14 @@ class PARSeqQuantizer:
             return cls.convert_to_real_int8(model, calibrator=None, apply_smooth=False, inplace=inplace)
         elif method == "smoothquant_int8":
             return cls.convert_to_real_int8(model, calibrator=calibrator, alpha=alpha, apply_smooth=True, inplace=inplace)
+        elif method in ["unified_int8", "unified"]:
+            return cls.prepare_for_unified_int8(
+                model, calibrator=calibrator, alpha=alpha, block_size=block_size, use_ibert_exp=use_ibert_exp, inplace=inplace
+            )
+        elif method in ["int_flashattn", "int_attention", "flashattn"]:
+            return cls.prepare_for_int_flashattn(model, block_size=block_size, use_ibert_exp=use_ibert_exp, inplace=inplace)
+        elif method in ["ibert", "ibert_int8", "integer_only"]:
+            return cls.prepare_for_ibert(model, inplace=inplace)
         elif method == "qat":
             return cls.prepare_for_qat(model, use_per_block=use_per_block, block_size=block_size, inplace=inplace)
         elif method in ["jetfire_fqt", "jetfire_training", "fqt"]:
@@ -233,7 +391,8 @@ class PARSeqQuantizer:
         elif method == "dynamic":
             return cls.quantize_dynamic(model)
         else:
-            raise ValueError(f"Unknown quantization method: {method}. Choose from ['real_int8', 'smoothquant_int8', 'qat', 'jetfire_fqt', 'dynamic']")
+            valid = "['real_int8', 'smoothquant_int8', 'unified_int8', 'int_flashattn', 'ibert', 'jetfire_fqt', 'qat', 'dynamic']"
+            raise ValueError(f"Unknown quantization method: {method}. Choose from {valid}")
 
     @classmethod
     def export_onnx(
