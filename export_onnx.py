@@ -15,6 +15,11 @@ def main():
     parser.add_argument("--device", default="cuda", help="Device to trace model on (cuda or cpu)")
     parser.add_argument("--max_label_length", type=int, default=25, help="Maximum label length")
     parser.add_argument("--fp16", action="store_true", default=False, help="Export in FP16 for native NVIDIA Tensor Cores")
+    parser.add_argument("--qdq", action="store_true", default=False, help="Export in Static QDQ INT8 format for NVIDIA TensorRT")
+    parser.add_argument("--output_qdq", default="outputs/parseq_nar_qdq.onnx", help="Output path for Static QDQ ONNX model")
+    parser.add_argument("--calib_dir", default=None, help="Directory of calibration images (e.g. data/test or demo_images)")
+    parser.add_argument("--calib_samples", type=int, default=64, help="Number of calibration samples")
+    parser.add_argument("--calib_method", default="MinMax", choices=["MinMax", "Entropy", "Percentile"], help="Calibration method")
     args = parser.parse_args()
 
     Path(args.output_fp32).parent.mkdir(parents=True, exist_ok=True)
@@ -30,16 +35,29 @@ def main():
         fp16=args.fp16,
         max_label_length=args.max_label_length,
     )
-    print(f"✓ ONNX FP32 salvo com sucesso em: {args.output_fp32}")
+    print(f"✓ ONNX {precision_str} salvo com sucesso em: {args.output_fp32}")
 
-    print(f"[2/2] Quantizando grafo para INT8 físico: {args.output_int8}...")
-    PARSeqQuantizer.export_onnx_int8(
-        args.output_fp32,
-        args.output_int8,
-        op_types_to_quantize=["MatMul"],
-    )
-    print(f"✓ ONNX INT8 salvo com sucesso em: {args.output_int8}")
-    print("\nModelos ONNX FP32 e INT8 gerados com sucesso em outputs/!")
+    if args.qdq:
+        Path(args.output_qdq).parent.mkdir(parents=True, exist_ok=True)
+        print(f"[2/2] Quantizando para Static QDQ INT8 (TensorRT format): {args.output_qdq}...")
+        PARSeqQuantizer.export_onnx_int8_qdq(
+            float_onnx_path=args.output_fp32,
+            output_qdq_path=args.output_qdq,
+            calib_dir=args.calib_dir,
+            calib_samples=args.calib_samples,
+            calibrate_method=args.calib_method,
+        )
+        print(f"✓ ONNX Static QDQ INT8 salvo com sucesso em: {args.output_qdq}")
+    else:
+        print(f"[2/2] Quantizando grafo para Dynamic INT8: {args.output_int8}...")
+        PARSeqQuantizer.export_onnx_int8(
+            args.output_fp32,
+            args.output_int8,
+            op_types_to_quantize=["MatMul"],
+        )
+        print(f"✓ ONNX INT8 salvo com sucesso em: {args.output_int8}")
+
+    print("\nModelos ONNX gerados com sucesso em outputs/!")
 
 
 if __name__ == "__main__":

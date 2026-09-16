@@ -12,6 +12,12 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark ONNX Model Performance")
     parser.add_argument("model_path", default="outputs/parseq_nar_int8.onnx", nargs="?", help="Path to .onnx file")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Execution device")
+    parser.add_argument(
+        "--provider",
+        default="auto",
+        choices=["auto", "tensorrt", "cuda", "cpu"],
+        help="ONNX Runtime Execution Provider (auto, tensorrt, cuda, cpu)",
+    )
     parser.add_argument("--iterations", type=int, default=100, help="Number of benchmark iterations")
     parser.add_argument("--warmup", type=int, default=15, help="Number of warmup iterations")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
@@ -26,8 +32,27 @@ def main():
 
     sess_opts = ort.SessionOptions()
     sess_opts.intra_op_num_threads = 4
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if args.device == "cuda" else ["CPUExecutionProvider"]
-    
+
+    # Build Execution Providers list
+    trt_cache_dir = os.path.join(os.path.dirname(args.model_path) or ".", "trt_cache")
+    os.makedirs(trt_cache_dir, exist_ok=True)
+    trt_options = {
+        "trt_fp16_enable": True,
+        "trt_int8_enable": True,
+        "trt_max_workspace_size": 2147483648,
+        "trt_engine_cache_enable": True,
+        "trt_engine_cache_path": trt_cache_dir,
+    }
+
+    available = ort.get_available_providers()
+    if args.provider == "tensorrt" or (args.provider == "auto" and "TensorrtExecutionProvider" in available and args.device == "cuda"):
+        providers = [("TensorrtExecutionProvider", trt_options), "CUDAExecutionProvider", "CPUExecutionProvider"]
+    elif args.device == "cuda" and (args.provider in ["cuda", "auto"]):
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    else:
+        providers = ["CPUExecutionProvider"]
+
+    print(f"Configuring ONNX session with providers: {[p[0] if isinstance(p, tuple) else p for p in providers]}")
     session = ort.InferenceSession(args.model_path, sess_opts, providers=providers)
     active_provider = session.get_providers()[0]
     input_name = session.get_inputs()[0].name

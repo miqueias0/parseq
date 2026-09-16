@@ -81,7 +81,23 @@ class ONNXModelWrapper:
 
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = 4
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if 'cuda' in device else ['CPUExecutionProvider']
+
+        provider_choice = kwargs.pop('provider', 'auto')
+        available = ort.get_available_providers()
+        trt_options = {
+            "trt_fp16_enable": True,
+            "trt_int8_enable": True,
+            "trt_max_workspace_size": 2147483648,
+            "trt_engine_cache_enable": True,
+            "trt_engine_cache_path": "./outputs/trt_cache",
+        }
+        if provider_choice == "tensorrt" or (provider_choice == "auto" and "TensorrtExecutionProvider" in available and "cuda" in device):
+            providers = [("TensorrtExecutionProvider", trt_options), "CUDAExecutionProvider", "CPUExecutionProvider"]
+        elif "cuda" in device and provider_choice in ["cuda", "auto"]:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
+
         self.session = ort.InferenceSession(str(onnx_path), sess_opts, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
 
@@ -131,6 +147,7 @@ def main():
         default='none',
         help='INT8 Quantization method to evaluate',
     )
+    parser.add_argument('--provider', default='auto', choices=['auto', 'tensorrt', 'cuda', 'cpu'], help='ONNX Runtime provider')
     parser.add_argument('--block_size', type=int, default=32, help='Block size for Jetfire / INT-FlashAttention (default: 32)')
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
@@ -147,9 +164,9 @@ def main():
 
     if args.checkpoint.endswith('.onnx'):
         ref_ckpt = getattr(args, 'ref_checkpoint', 'pretrained=parseq')
-        model = ONNXModelWrapper(args.checkpoint, ref_checkpoint=ref_ckpt, device=args.device, **kwargs)
-        provider = 'CUDAExecutionProvider' if 'cuda' in args.device else 'CPUExecutionProvider'
-        print(f"Loaded ONNX Model: {args.checkpoint} (ExecutionProvider: {provider})")
+        model = ONNXModelWrapper(args.checkpoint, ref_checkpoint=ref_ckpt, device=args.device, provider=args.provider, **kwargs)
+        active_p = model.session.get_providers()[0]
+        print(f"Loaded ONNX Model: {args.checkpoint} (ExecutionProvider: {active_p})")
     else:
         model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
         if args.quant_method != 'none':

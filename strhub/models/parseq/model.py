@@ -99,10 +99,12 @@ class PARSeq(nn.Module):
         tgt_query_mask: Optional[Tensor] = None,
     ):
         N, L = tgt.shape
-        # <bos> stands for the null context. We only supply position information for characters after <bos>.
         null_ctx = self.text_embed(tgt[:, :1])
-        tgt_emb = self.pos_queries[:, : L - 1] + self.text_embed(tgt[:, 1:])
-        tgt_emb = self.dropout(torch.cat([null_ctx, tgt_emb], dim=1))
+        if L > 1:
+            tgt_emb = self.pos_queries[:, : L - 1] + self.text_embed(tgt[:, 1:])
+            tgt_emb = self.dropout(torch.cat([null_ctx, tgt_emb], dim=1))
+        else:
+            tgt_emb = self.dropout(null_ctx)
         if tgt_query is None:
             tgt_query = self.pos_queries[:, :L].expand(N, -1, -1)
         tgt_query = self.dropout(tgt_query)

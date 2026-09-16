@@ -468,3 +468,60 @@ class PARSeqQuantizer:
         )
         log.info(f"Quantized ONNX INT8 model saved to: {output_int8_path}")
         return output_int8_path
+
+    @classmethod
+    def export_onnx_int8_qdq(
+        cls,
+        float_onnx_path: Union[str, Path],
+        output_qdq_path: Union[str, Path],
+        calibration_data_reader: Optional[object] = None,
+        calib_dir: Optional[Union[str, Path]] = None,
+        calib_samples: int = 64,
+        calibrate_method: str = "MinMax",
+        activation_type: str = "QInt8",
+        per_channel: bool = True,
+        op_types_to_quantize: Optional[List[str]] = None,
+    ) -> Path:
+        """Quantizes an ONNX model to Static QDQ INT8 format for NVIDIA TensorRT.
+        
+        Inserts QuantizeLinear and DequantizeLinear nodes which TensorRT fuses directly
+        into high-throughput INT8 Tensor Core kernels on sm_75+ (Turing, Ampere, Ada, Hopper, Blackwell).
+        Eliminates CPU-GPU Memcpy overhead completely.
+        """
+        import onnxruntime.quantization as ort_quant
+        from .calibrator import PARSeqCalibrationDataReader
+
+        float_onnx_path = Path(float_onnx_path)
+        output_qdq_path = Path(output_qdq_path)
+        output_qdq_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if calibration_data_reader is None:
+            data_source = calib_dir if calib_dir is not None else "data/test"
+            calibration_data_reader = PARSeqCalibrationDataReader(
+                data_source=data_source,
+                max_samples=calib_samples,
+            )
+
+        calib_method_enum = getattr(
+            ort_quant.CalibrationMethod, calibrate_method, ort_quant.CalibrationMethod.MinMax
+        )
+        act_type_enum = getattr(
+            ort_quant.QuantType, activation_type, ort_quant.QuantType.QInt8
+        )
+
+        if op_types_to_quantize is None:
+            op_types_to_quantize = ["MatMul", "Add"]
+
+        ort_quant.quantize_static(
+            model_input=str(float_onnx_path),
+            model_output=str(output_qdq_path),
+            calibration_data_reader=calibration_data_reader,
+            quant_format=ort_quant.QuantFormat.QDQ,
+            activation_type=act_type_enum,
+            weight_type=ort_quant.QuantType.QInt8,
+            per_channel=per_channel,
+            calibrate_method=calib_method_enum,
+            op_types_to_quantize=op_types_to_quantize,
+        )
+        log.info(f"Quantized Static QDQ INT8 ONNX model for TensorRT saved to: {output_qdq_path}")
+        return output_qdq_path
