@@ -255,6 +255,20 @@ class INT8MultiheadAttention(nn.Module):
                 if float_mha.out_proj.bias is not None:
                     mod.out_proj.bias.copy_(float_mha.out_proj.bias)
 
+        target_device = (
+            float_mha.in_proj_weight.device
+            if float_mha.in_proj_weight is not None
+            else (
+                float_mha.q_proj_weight.device
+                if float_mha.q_proj_weight is not None
+                else (
+                    float_mha.out_proj.weight.device
+                    if hasattr(float_mha, "out_proj")
+                    else torch.device("cpu")
+                )
+            )
+        )
+        mod = mod.to(target_device)
         return mod
 
     def forward(
@@ -269,6 +283,9 @@ class INT8MultiheadAttention(nn.Module):
         is_causal: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Compatible with nn.MultiheadAttention signature."""
+        if self.q_proj.weight.device != query.device:
+            self.to(query.device)
+
         if not self.batch_first:
             # Transpose sequence and batch: [L, B, d] -> [B, L, d]
             query = query.transpose(0, 1)

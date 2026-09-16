@@ -194,6 +194,9 @@ class ILayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(normalized_shape))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.weight.device != x.device:
+            self.to(x.device)
+
         orig_dtype = x.dtype
         x_fp = x.float()
         

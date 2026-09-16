@@ -77,6 +77,8 @@ class QuantizedLinear(nn.Module):
             use_per_block=use_per_block,
             block_size=block_size,
         )
+        target_device = float_linear.weight.device
+        mod = mod.to(target_device)
         with torch.no_grad():
             mod.weight.copy_(float_linear.weight)
             if float_linear.bias is not None:
@@ -84,6 +86,9 @@ class QuantizedLinear(nn.Module):
         return mod
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.weight.device != x.device:
+            self.to(x.device)
+
         # Quantize activation (gradients pass through via STE in training mode)
         x_q = self.act_quantizer(x)
         # Quantize weight (gradients pass through to self.weight via STE)
@@ -160,9 +165,14 @@ class RealHardwareInt8Linear(nn.Module):
             except Exception:
                 object.__setattr__(mod, "_cpu_dyn_linear", None)
 
+        target_device = float_linear.weight.device
+        mod = mod.to(target_device)
         return mod
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.weight.device != x.device or self.weight_t.device != x.device:
+            self.to(x.device)
+
         orig_shape = x.shape
         in_feat = self.in_features
         orig_dtype = x.dtype
@@ -172,10 +182,10 @@ class RealHardwareInt8Linear(nn.Module):
         # Producing standard float GEMM with exact INT8-dequantized weights guarantees
         # device-agnostic, bug-free ONNX graphs.
         if torch.onnx.is_in_onnx_export() or torch.jit.is_tracing():
-            w_dequant = self.weight.to(orig_dtype) * self.weight_scale.to(orig_dtype)
+            w_dequant = self.weight.to(device=x.device, dtype=orig_dtype) * self.weight_scale.to(device=x.device, dtype=orig_dtype)
             out = torch.matmul(x.reshape(-1, in_feat), w_dequant.t())
             if self.bias is not None:
-                out = out + self.bias.to(orig_dtype)
+                out = out + self.bias.to(device=x.device, dtype=orig_dtype)
             return out.reshape(*orig_shape[:-1], self.out_features)
 
         # 1. CUDA Backend: Native INT8 GEMM on NVIDIA Tensor Cores
@@ -204,10 +214,10 @@ class RealHardwareInt8Linear(nn.Module):
                     out = out + self.bias.to(orig_dtype)
             except Exception:
                 # Robust fallback for unsupported shapes or CUDA driver versions
-                w_dequant = self.weight.to(orig_dtype) * self.weight_scale.to(orig_dtype)
+                w_dequant = self.weight.to(device=x.device, dtype=orig_dtype) * self.weight_scale.to(device=x.device, dtype=orig_dtype)
                 out = torch.matmul(x_2d, w_dequant.t())
                 if self.bias is not None:
-                    out = out + self.bias.to(orig_dtype)
+                    out = out + self.bias.to(device=x.device, dtype=orig_dtype)
 
             return out.reshape(*orig_shape[:-1], self.out_features)
 
@@ -218,10 +228,10 @@ class RealHardwareInt8Linear(nn.Module):
 
         # 3. Universal Fallback
         x_2d = x.reshape(-1, in_feat)
-        w_dequant = self.weight.to(orig_dtype) * self.weight_scale.to(orig_dtype)
+        w_dequant = self.weight.to(device=x.device, dtype=orig_dtype) * self.weight_scale.to(device=x.device, dtype=orig_dtype)
         out = torch.matmul(x_2d, w_dequant.t())
         if self.bias is not None:
-            out = out + self.bias.to(orig_dtype)
+            out = out + self.bias.to(device=x.device, dtype=orig_dtype)
         return out.reshape(*orig_shape[:-1], self.out_features)
 
     def extra_repr(self) -> str:
@@ -367,6 +377,8 @@ class JetfireInt8Linear(nn.Module):
             bias=(float_linear.bias is not None),
             block_size=block_size,
         )
+        target_device = float_linear.weight.device
+        mod = mod.to(target_device)
         with torch.no_grad():
             mod.weight.copy_(float_linear.weight)
             if float_linear.bias is not None:
@@ -374,6 +386,9 @@ class JetfireInt8Linear(nn.Module):
         return mod
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.weight.device != x.device:
+            self.to(x.device)
+
         if torch.onnx.is_in_onnx_export() or torch.jit.is_tracing():
             return F.linear(x, self.weight, self.bias)
 

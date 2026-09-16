@@ -179,6 +179,9 @@ class JetfireFusedLayerNorm(nn.Module):
         scale: Optional[torch.Tensor] = None,
         return_int8: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        if self.weight.device != x.device:
+            self.to(x.device)
+
         # Dequantize in registers/SRAM
         if scale is not None and x.dtype == torch.int8:
             x_fp = x.float() * scale

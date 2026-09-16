@@ -250,12 +250,12 @@ class PARSeqQuantizer:
             if hasattr(inner, "encoder") and hasattr(inner.encoder, "blocks"):
                 for block in inner.encoder.blocks:
                     if hasattr(block, "norm1") and isinstance(block.norm1, nn.LayerNorm):
-                        iln = ILayerNorm(block.norm1.normalized_shape[0], eps=block.norm1.eps)
+                        iln = ILayerNorm(block.norm1.normalized_shape[0], eps=block.norm1.eps).to(block.norm1.weight.device)
                         iln.weight.copy_(block.norm1.weight)
                         iln.bias.copy_(block.norm1.bias)
                         block.norm1 = iln
                     if hasattr(block, "norm2") and isinstance(block.norm2, nn.LayerNorm):
-                        iln = ILayerNorm(block.norm2.normalized_shape[0], eps=block.norm2.eps)
+                        iln = ILayerNorm(block.norm2.normalized_shape[0], eps=block.norm2.eps).to(block.norm2.weight.device)
                         iln.weight.copy_(block.norm2.weight)
                         iln.bias.copy_(block.norm2.bias)
                         block.norm2 = iln
@@ -263,7 +263,7 @@ class PARSeqQuantizer:
                         block.mlp.act = IGELU()
 
                 if hasattr(inner.encoder, "norm") and isinstance(inner.encoder.norm, nn.LayerNorm):
-                    iln = ILayerNorm(inner.encoder.norm.normalized_shape[0], eps=inner.encoder.norm.eps)
+                    iln = ILayerNorm(inner.encoder.norm.normalized_shape[0], eps=inner.encoder.norm.eps).to(inner.encoder.norm.weight.device)
                     iln.weight.copy_(inner.encoder.norm.weight)
                     iln.bias.copy_(inner.encoder.norm.bias)
                     inner.encoder.norm = iln
@@ -281,7 +281,7 @@ class PARSeqQuantizer:
                     for norm_name in ["norm1", "norm2", "norm_q", "norm_c"]:
                         if hasattr(layer, norm_name) and isinstance(getattr(layer, norm_name), nn.LayerNorm):
                             ln = getattr(layer, norm_name)
-                            iln = ILayerNorm(ln.normalized_shape[0], eps=ln.eps)
+                            iln = ILayerNorm(ln.normalized_shape[0], eps=ln.eps).to(ln.weight.device)
                             iln.weight.copy_(ln.weight)
                             iln.bias.copy_(ln.bias)
                             setattr(layer, norm_name, iln)
@@ -291,7 +291,7 @@ class PARSeqQuantizer:
 
                 if hasattr(inner.decoder, "norm") and isinstance(inner.decoder.norm, nn.LayerNorm):
                     ln = inner.decoder.norm
-                    iln = ILayerNorm(ln.normalized_shape[0], eps=ln.eps)
+                    iln = ILayerNorm(ln.normalized_shape[0], eps=ln.eps).to(ln.weight.device)
                     iln.weight.copy_(ln.weight)
                     iln.bias.copy_(ln.bias)
                     inner.decoder.norm = iln
@@ -331,7 +331,7 @@ class PARSeqQuantizer:
                     for norm_name in ["norm1", "norm2", "norm_q", "norm_c"]:
                         if hasattr(layer, norm_name) and isinstance(getattr(layer, norm_name), nn.LayerNorm):
                             ln = getattr(layer, norm_name)
-                            fln = JetfireFusedLayerNorm(ln.normalized_shape[0], eps=ln.eps, block_size=block_size)
+                            fln = JetfireFusedLayerNorm(ln.normalized_shape[0], eps=ln.eps, block_size=block_size).to(ln.weight.device)
                             fln.weight.copy_(ln.weight)
                             fln.bias.copy_(ln.bias)
                             setattr(layer, norm_name, fln)
@@ -371,28 +371,42 @@ class PARSeqQuantizer:
             use_ibert_exp: Use I-BERT bit-shift exp in attention.
             inplace: Whether to modify model in place.
         """
+        # Detect model device
+        target_device = None
+        for p in model.parameters():
+            target_device = p.device
+            break
+        if target_device is None:
+            for b in model.buffers():
+                target_device = b.device
+                break
+
         method = method.lower()
         if method == "real_int8":
-            return cls.convert_to_real_int8(model, calibrator=None, apply_smooth=False, inplace=inplace)
+            res = cls.convert_to_real_int8(model, calibrator=None, apply_smooth=False, inplace=inplace)
         elif method == "smoothquant_int8":
-            return cls.convert_to_real_int8(model, calibrator=calibrator, alpha=alpha, apply_smooth=True, inplace=inplace)
+            res = cls.convert_to_real_int8(model, calibrator=calibrator, alpha=alpha, apply_smooth=True, inplace=inplace)
         elif method in ["unified_int8", "unified"]:
-            return cls.prepare_for_unified_int8(
+            res = cls.prepare_for_unified_int8(
                 model, calibrator=calibrator, alpha=alpha, block_size=block_size, use_ibert_exp=use_ibert_exp, inplace=inplace
             )
         elif method in ["int_flashattn", "int_attention", "flashattn"]:
-            return cls.prepare_for_int_flashattn(model, block_size=block_size, use_ibert_exp=use_ibert_exp, inplace=inplace)
+            res = cls.prepare_for_int_flashattn(model, block_size=block_size, use_ibert_exp=use_ibert_exp, inplace=inplace)
         elif method in ["ibert", "ibert_int8", "integer_only"]:
-            return cls.prepare_for_ibert(model, inplace=inplace)
+            res = cls.prepare_for_ibert(model, inplace=inplace)
         elif method == "qat":
-            return cls.prepare_for_qat(model, use_per_block=use_per_block, block_size=block_size, inplace=inplace)
+            res = cls.prepare_for_qat(model, use_per_block=use_per_block, block_size=block_size, inplace=inplace)
         elif method in ["jetfire_fqt", "jetfire_training", "fqt"]:
-            return cls.prepare_for_jetfire_training(model, block_size=block_size, inplace=inplace)
+            res = cls.prepare_for_jetfire_training(model, block_size=block_size, inplace=inplace)
         elif method == "dynamic":
             return cls.quantize_dynamic(model)
         else:
             valid = "['real_int8', 'smoothquant_int8', 'unified_int8', 'int_flashattn', 'ibert', 'jetfire_fqt', 'qat', 'dynamic']"
             raise ValueError(f"Unknown quantization method: {method}. Choose from {valid}")
+
+        if target_device is not None and method != "dynamic":
+            res = res.to(target_device)
+        return res
 
     @classmethod
     def export_onnx(
