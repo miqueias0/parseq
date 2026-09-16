@@ -66,10 +66,24 @@ class BenchmarkEngine:
 
         dummy_numpy = dummy_tensor.cpu().numpy()
 
+        onnx_input_name = "images"
+        if is_onnx and hasattr(onnx_session, "get_inputs"):
+            try:
+                onnx_input_name = onnx_session.get_inputs()[0].name
+            except Exception:
+                onnx_input_name = "images"
+
+        def _run_onnx(data):
+            try:
+                return onnx_session.run(None, {onnx_input_name: data})
+            except Exception:
+                alt = "image" if onnx_input_name == "images" else "images"
+                return onnx_session.run(None, {alt: data})
+
         # 1. Warm-up
         for _ in range(warmup):
             if is_onnx:
-                _ = onnx_session.run(None, {"image": dummy_numpy})
+                _ = _run_onnx(dummy_numpy)
             else:
                 _ = model(dummy_tensor)
             if is_cuda and torch.cuda.is_available():
@@ -83,7 +97,7 @@ class BenchmarkEngine:
             t0 = time.perf_counter()
 
             if is_onnx:
-                _ = onnx_session.run(None, {"image": dummy_numpy})
+                _ = _run_onnx(dummy_numpy)
             else:
                 _ = model(dummy_tensor)
 

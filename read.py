@@ -34,6 +34,26 @@ def main():
     kwargs = parse_model_args(unknown)
     print(f'Additional keyword arguments: {kwargs}')
 
+    if args.checkpoint.endswith('.onnx'):
+        import onnxruntime as ort
+        mll = kwargs.get('max_label_length', 25)
+        ref_model = load_from_checkpoint('pretrained=parseq', max_label_length=mll, **kwargs).eval()
+        img_transform = SceneTextDataModule.get_transform(ref_model.hparams.img_size)
+        sess_opts = ort.SessionOptions()
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if 'cuda' in args.device else ['CPUExecutionProvider']
+        session = ort.InferenceSession(args.checkpoint, sess_opts, providers=providers)
+        input_name = session.get_inputs()[0].name
+        print(f"Running ONNX inference with provider: {session.get_providers()[0]}")
+
+        for fname in args.images:
+            image = Image.open(fname).convert('RGB')
+            image_np = img_transform(image).unsqueeze(0).numpy()
+            logits_np = session.run(None, {input_name: image_np})[0]
+            p = torch.from_numpy(logits_np).softmax(-1)
+            pred, p = ref_model.tokenizer.decode(p)
+            print(f'{fname}: {pred[0]} (confidence: {p[0].prod().item():.4f})')
+        return
+
     model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
     img_transform = SceneTextDataModule.get_transform(model.hparams.img_size)
 

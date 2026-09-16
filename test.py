@@ -66,10 +66,55 @@ def print_results_table(results: list[Result], file=None):
     )
 
 
+class ONNXModelWrapper:
+    """Wrapper to evaluate ONNX models directly through PyTorch SceneTextDataModule."""
+
+    def __init__(self, onnx_path: str, ref_checkpoint: str = 'pretrained=parseq', device: str = 'cuda', **kwargs):
+        import onnxruntime as ort
+        from nltk import edit_distance
+        from strhub.models.base import BatchResult
+
+        self.edit_distance = edit_distance
+        mll = kwargs.get('max_label_length', 25)
+        self.ref_model = load_from_checkpoint(ref_checkpoint, max_label_length=mll, **kwargs).eval()
+        self.hparams = self.ref_model.hparams
+
+        sess_opts = ort.SessionOptions()
+        sess_opts.intra_op_num_threads = 4
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if 'cuda' in device else ['CPUExecutionProvider']
+        self.session = ort.InferenceSession(str(onnx_path), sess_opts, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+
+    def test_step(self, batch, batch_idx):
+        images, labels = batch
+        img_np = images.cpu().numpy()
+        ort_outs = self.session.run(None, {self.input_name: img_np})
+        logits_np = ort_outs[0]
+        logits = torch.from_numpy(logits_np)
+        probs = logits.softmax(-1)
+        preds, probs = self.ref_model.tokenizer.decode(probs)
+
+        correct = 0
+        total = 0
+        ned = 0
+        confidence = 0
+        label_length = 0
+        for pred, prob, gt in zip(preds, probs, labels):
+            confidence += prob.prod().item()
+            pred = self.ref_model.charset_adapter(pred)
+            ned += self.edit_distance(pred, gt) / max(len(pred), len(gt))
+            if pred == gt:
+                correct += 1
+            total += 1
+            label_length += len(pred)
+        return dict(output=self.BatchResult(total, correct, ned, confidence, label_length, None, None))
+
+
 @torch.inference_mode()
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('checkpoint', help="Model checkpoint (or 'pretrained=<model_id>')")
+    parser.add_argument('checkpoint', help="Model checkpoint (or 'pretrained=<model_id>' or path to '.onnx' file)")
+    parser.add_argument('--ref_checkpoint', default='pretrained=parseq', help="Reference checkpoint for tokenizer when evaluating .onnx")
     parser.add_argument('--data_root', default='data')
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--num_workers', type=int, default=4)
@@ -100,13 +145,19 @@ def main():
     kwargs.update({'charset_test': charset_test})
     print(f'Additional keyword arguments: {kwargs}')
 
-    model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
-    if args.quant_method != 'none':
-        from strhub.models.quantization import PARSeqQuantizer
-        print(f'Applying quantization method: {args.quant_method} (block_size={args.block_size})...')
-        model = PARSeqQuantizer.quantize(model, method=args.quant_method, block_size=args.block_size, inplace=True)
-        if args.quant_method != 'dynamic':
-            model = model.to(args.device)
+    if args.checkpoint.endswith('.onnx'):
+        ref_ckpt = getattr(args, 'ref_checkpoint', 'pretrained=parseq')
+        model = ONNXModelWrapper(args.checkpoint, ref_checkpoint=ref_ckpt, device=args.device, **kwargs)
+        provider = 'CUDAExecutionProvider' if 'cuda' in args.device else 'CPUExecutionProvider'
+        print(f"Loaded ONNX Model: {args.checkpoint} (ExecutionProvider: {provider})")
+    else:
+        model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
+        if args.quant_method != 'none':
+            from strhub.models.quantization import PARSeqQuantizer
+            print(f'Applying quantization method: {args.quant_method} (block_size={args.block_size})...')
+            model = PARSeqQuantizer.quantize(model, method=args.quant_method, block_size=args.block_size, inplace=True)
+            if args.quant_method != 'dynamic':
+                model = model.to(args.device)
     hp = model.hparams
     datamodule = SceneTextDataModule(
         args.data_root,
