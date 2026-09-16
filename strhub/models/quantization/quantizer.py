@@ -510,7 +510,13 @@ class PARSeqQuantizer:
         )
 
         if op_types_to_quantize is None:
-            op_types_to_quantize = ["MatMul", "Add"]
+            op_types_to_quantize = ["MatMul"]
+
+        extra_opts = {
+            "ActivationSymmetric": True,
+            "WeightSymmetric": True,
+            "CalibTensorRangeSymmetric": True,
+        }
 
         ort_quant.quantize_static(
             model_input=str(float_onnx_path),
@@ -522,6 +528,20 @@ class PARSeqQuantizer:
             per_channel=per_channel,
             calibrate_method=calib_method_enum,
             op_types_to_quantize=op_types_to_quantize,
+            extra_options=extra_opts,
         )
+
+        # Run shape inference so all inserted QDQ nodes and boundary tensors have fully defined shapes for TensorRT
+        import onnx
+        from onnx import shape_inference
+
+        try:
+            qdq_model = onnx.load(str(output_qdq_path))
+            inferred = shape_inference.infer_shapes(qdq_model, check_type=True)
+            onnx.save(inferred, str(output_qdq_path))
+            log.info(f"Shape inference completed for TensorRT on: {output_qdq_path}")
+        except Exception as e:
+            log.warning(f"Shape inference warning on QDQ model: {e}")
+
         log.info(f"Quantized Static QDQ INT8 ONNX model for TensorRT saved to: {output_qdq_path}")
         return output_qdq_path

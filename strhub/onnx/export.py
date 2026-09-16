@@ -206,8 +206,13 @@ def export_parseq_to_onnx(
         else:
             raise
 
-    # Validate ONNX graph
+    # Validate ONNX graph & infer complete shapes for TensorRT
     onnx_model = onnx.load(output_path)
+    try:
+        from onnx import shape_inference
+        onnx_model = shape_inference.infer_shapes(onnx_model, check_type=True)
+    except Exception:
+        pass
     onnx.checker.check_model(onnx_model)
 
     # Add custom metadata properties

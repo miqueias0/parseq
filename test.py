@@ -135,17 +135,35 @@ class ONNXModelWrapper:
         self.ref_model = load_from_checkpoint(ref_checkpoint, max_label_length=mll, **kwargs).eval()
         self.hparams = self.ref_model.hparams
 
+        # Ensure all shapes are inferred for TensorRT Execution Provider
+        if provider_choice in ["tensorrt", "auto"] and "cuda" in device:
+            try:
+                import onnx
+                from onnx import shape_inference
+                m = onnx.load(str(onnx_path))
+                if len(m.graph.value_info) < len(m.graph.node):
+                    m_inf = shape_inference.infer_shapes(m, check_type=True)
+                    onnx.save(m_inf, str(onnx_path))
+            except Exception:
+                pass
+
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = 4
 
         provider_choice = kwargs.pop('provider', 'auto')
         available = ort.get_available_providers()
+        trt_cache_dir = os.path.join(os.path.dirname(str(onnx_path)) or ".", "trt_cache")
+        os.makedirs(trt_cache_dir, exist_ok=True)
+        img_size = getattr(self.hparams, 'img_size', (32, 128))
         trt_options = {
             "trt_fp16_enable": True,
             "trt_int8_enable": True,
             "trt_max_workspace_size": 2147483648,
             "trt_engine_cache_enable": True,
-            "trt_engine_cache_path": "./outputs/trt_cache",
+            "trt_engine_cache_path": trt_cache_dir,
+            "trt_profile_min_shapes": f"images:1x3x{img_size[0]}x{img_size[1]}",
+            "trt_profile_max_shapes": f"images:64x3x{img_size[0]}x{img_size[1]}",
+            "trt_profile_opt_shapes": f"images:16x3x{img_size[0]}x{img_size[1]}",
         }
         if provider_choice == "tensorrt" or (provider_choice == "auto" and "TensorrtExecutionProvider" in available and "cuda" in device):
             providers = [("TensorrtExecutionProvider", trt_options), "CUDAExecutionProvider", "CPUExecutionProvider"]

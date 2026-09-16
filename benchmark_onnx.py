@@ -85,6 +85,20 @@ def main():
     if not os.path.exists(args.model_path):
         raise FileNotFoundError(f"ONNX model file not found: {args.model_path}")
 
+    # Ensure all shapes are inferred for TensorRT Execution Provider
+    if args.provider in ["tensorrt", "auto"] and args.device == "cuda":
+        try:
+            import onnx
+            from onnx import shape_inference
+            m = onnx.load(args.model_path)
+            if len(m.graph.value_info) < len(m.graph.node):
+                print(f"Inferring shapes for TensorRT compatibility on {args.model_path}...")
+                m_inf = shape_inference.infer_shapes(m, check_type=True)
+                onnx.save(m_inf, args.model_path)
+                print("✓ Shape inference completed.")
+        except Exception:
+            pass
+
     file_size_mb = os.path.getsize(args.model_path) / (1024.0 * 1024.0)
 
     sess_opts = ort.SessionOptions()
@@ -99,6 +113,9 @@ def main():
         "trt_max_workspace_size": 2147483648,
         "trt_engine_cache_enable": True,
         "trt_engine_cache_path": trt_cache_dir,
+        "trt_profile_min_shapes": f"images:1x3x{args.height}x{args.width}",
+        "trt_profile_max_shapes": f"images:{max(args.batch_size, 4)}x3x{args.height}x{args.width}",
+        "trt_profile_opt_shapes": f"images:{args.batch_size}x3x{args.height}x{args.width}",
     }
 
     available = ort.get_available_providers()
