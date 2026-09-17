@@ -78,6 +78,17 @@ def main():
     parser.add_argument('--new', action='store_true', default=False, help='Evaluate on new benchmark datasets')
     parser.add_argument('--rotation', type=int, default=0, help='Angle of rotation (counter clockwise) in degrees.')
     parser.add_argument('--device', default='cuda')
+    parser.add_argument(
+        '--quant_mode',
+        choices=['none', 'ptq', 'qat', 'integer_only'],
+        default='none',
+        help='Quantization evaluation mode: none, ptq, qat, or integer_only',
+    )
+    parser.add_argument(
+        '--base_checkpoint',
+        default=None,
+        help='Base model checkpoint (.ckpt or .pt) to load decoder and head weights when testing .onnx or .engine',
+    )
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
 
@@ -89,7 +100,15 @@ def main():
     kwargs.update({'charset_test': charset_test})
     print(f'Additional keyword arguments: {kwargs}')
 
-    model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
+    from strhub.quantization.eval_adapter import load_model_for_testing
+
+    model = load_model_for_testing(
+        args.checkpoint,
+        quant_mode=args.quant_mode,
+        device=args.device,
+        base_checkpoint=args.base_checkpoint,
+        **kwargs,
+    ).eval().to(args.device)
     hp = model.hparams
     datamodule = SceneTextDataModule(
         args.data_root,

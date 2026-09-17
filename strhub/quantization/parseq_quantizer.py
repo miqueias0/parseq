@@ -361,11 +361,25 @@ class IntegerPARSeq(nn.Module):
         out = self.decoder_norm(query)
         return out
 
-    def forward(self, images: Tensor, max_length: Optional[int] = None) -> Tensor:
+    def forward(self, *args, **kwargs) -> Tensor:
         """
         End-to-End Integer-Only Forward.
+        Supports both forward(tokenizer, images, max_length) and forward(images, max_length).
         Returns integer logits [B, num_steps, num_tokens - 2].
         """
+        if len(args) >= 2 and not isinstance(args[0], Tensor):
+            tokenizer = args[0]
+            images = args[1]
+            max_length = args[2] if len(args) > 2 else kwargs.get("max_length", None)
+        elif len(args) >= 1 and isinstance(args[0], Tensor):
+            tokenizer = kwargs.get("tokenizer", None)
+            images = args[0]
+            max_length = args[1] if len(args) > 1 else kwargs.get("max_length", None)
+        else:
+            images = kwargs.get("images", None)
+            tokenizer = kwargs.get("tokenizer", None)
+            max_length = kwargs.get("max_length", None)
+
         max_length = self.max_label_length if max_length is None else min(max_length, self.max_label_length)
         bs = images.shape[0]
         num_steps = max_length + 1
@@ -392,8 +406,7 @@ class IntegerPARSeq(nn.Module):
             tgt_in = torch.zeros((bs, num_steps), dtype=torch.long, device=images.device)
             tgt_out = self.decode(tgt_in, memory)
             logits = self.head(tgt_out)
-
-        return logits
+        return logits.float()
 
 
 # ---------------------------------------------------------------------------
