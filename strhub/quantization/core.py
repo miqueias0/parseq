@@ -258,14 +258,15 @@ class QuantNoiseLinear(nn.Linear):
         self.register_buffer("scale_x", torch.tensor(1.0))
 
     def forward(self, x: Tensor) -> Tensor:
-        # Fake quantize activations via STE
-        if self.scale_x.item() > 0:
-            x_scaled = x / self.scale_x
-            x_clamped = torch.clamp(x_scaled, -self.qmax, self.qmax)
-            x_quant = (torch.round(x_clamped) - x_scaled).detach() + x_scaled
-            x_in = x_quant * self.scale_x
-        else:
-            x_in = x
+        # Dynamic activation scaling via STE
+        max_x = x.detach().abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+        scale_x = max_x / float(self.qmax)
+        self.scale_x = scale_x.mean()
+
+        x_scaled = x / scale_x
+        x_clamped = torch.clamp(x_scaled, -self.qmax, self.qmax)
+        x_quant = (torch.round(x_clamped) - x_scaled).detach() + x_scaled
+        x_in = x_quant * scale_x
 
         # Weight quantization with Quant-Noise
         w = self.weight
@@ -301,13 +302,15 @@ class QuantNoiseConv2d(nn.Conv2d):
         self.register_buffer("scale_x", torch.tensor(1.0))
 
     def forward(self, x: Tensor) -> Tensor:
-        if self.scale_x.item() > 0:
-            x_scaled = x / self.scale_x
-            x_clamped = torch.clamp(x_scaled, -self.qmax, self.qmax)
-            x_quant = (torch.round(x_clamped) - x_scaled).detach() + x_scaled
-            x_in = x_quant * self.scale_x
-        else:
-            x_in = x
+        # Dynamic activation scaling via STE
+        max_x = x.detach().abs().amax(dim=(1, 2, 3), keepdim=True).clamp(min=1e-8)
+        scale_x = max_x / float(self.qmax)
+        self.scale_x = scale_x.mean()
+
+        x_scaled = x / scale_x
+        x_clamped = torch.clamp(x_scaled, -self.qmax, self.qmax)
+        x_quant = (torch.round(x_clamped) - x_scaled).detach() + x_scaled
+        x_in = x_quant * scale_x
 
         w = self.weight
         max_w = w.detach().abs().amax(dim=(1, 2, 3), keepdim=True)

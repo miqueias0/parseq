@@ -24,6 +24,7 @@ class TRTEncoderWrapper(nn.Module):
     """
     Wraps a compiled TensorRT engine to replace model.encoder.
     Executes image encoding on GPU using native TensorRT context.
+    Automatically handles arbitrary batch sizes via dynamic shape execution and slicing.
     """
     def __init__(self, engine_path: str, device: str = "cuda"):
         super().__init__()
@@ -42,24 +43,37 @@ class TRTEncoderWrapper(nn.Module):
             self.engine = runtime.deserialize_cuda_engine(f.read())
         self.context = self.engine.create_execution_context()
 
-    def forward(self, images: Tensor) -> Tensor:
-        # images: [B, 3, 32, 128] on CUDA
-        B = images.shape[0]
-        # Set dynamic shape
-        self.context.set_input_shape("images", (B, 3, 32, 128))
+        # Query max batch size supported by profile 0
+        try:
+            _, _, max_s = self.engine.get_tensor_profile_shape("images", 0)
+            self.max_batch_size = max(int(max_s[0]), 1)
+        except Exception:
+            self.max_batch_size = 256
 
-        # Output shape: [B, num_patches, embed_dim]
-        # PARSeq small default: num_patches = 128, embed_dim = 384
+    def _execute_subbatch(self, images: Tensor) -> Tensor:
+        b = images.shape[0]
+        self.context.set_input_shape("images", (b, 3, 32, 128))
         out_shape = tuple(self.context.get_tensor_shape("memory"))
-        # Replace dynamic batch if needed
-        out_shape = (B,) + out_shape[1:]
+        out_shape = (b,) + out_shape[1:]
         memory = torch.empty(out_shape, dtype=torch.float32, device=images.device)
 
-        # Set tensor addresses and execute
         self.context.set_tensor_address("images", images.data_ptr())
         self.context.set_tensor_address("memory", memory.data_ptr())
         self.context.execute_async_v3(torch.cuda.current_stream().cuda_stream)
         return memory
+
+    def forward(self, images: Tensor) -> Tensor:
+        # images: [B, 3, 32, 128] on CUDA
+        B = images.shape[0]
+        if B <= self.max_batch_size:
+            return self._execute_subbatch(images)
+
+        # Chunk across max_batch_size to never exceed optimization profile
+        chunks = []
+        for i in range(0, B, self.max_batch_size):
+            chunk = images[i : i + self.max_batch_size]
+            chunks.append(self._execute_subbatch(chunk))
+        return torch.cat(chunks, dim=0)
 
 
 class ONNXEncoderWrapper(nn.Module):

@@ -62,13 +62,12 @@ def main():
     # Prepare QAT model with Quant-Noise
     quantizer = PARSeqQuantizer(model, mode="qat", quant_noise_p=args.quant_noise_p)
     qat_model = quantizer.prepare_qat()
-    qat_model.to(args.device)
-    qat_model.train()
+    system.model = qat_model
+    system.to(args.device)
+    system.train()
 
-    optimizer = AdamW(qat_model.parameters(), lr=args.lr, weight_decay=1e-4)
+    optimizer = AdamW(system.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
-    pad_id = getattr(system.tokenizer, "pad_id", 0)
-    criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
     # Load real training data from dataset
     if os.path.isdir(args.data_root):
@@ -95,22 +94,13 @@ def main():
         epoch_loss = 0.0
         for batch_idx, (imgs, labels) in enumerate(loader):
             imgs = imgs.to(args.device)
-            targets = system.tokenizer.encode(labels, device=args.device)
             optimizer.zero_grad()
 
-            # Forward pass through QAT model
-            memory = qat_model.encode(imgs)
-            # Decoder forward
-            tgt_in = targets[:, :-1]
-            tgt_out = targets[:, 1:]
-            out = qat_model.decode(tgt_in, memory)
-            logits = qat_model.head(out)
-
-            loss = criterion(logits.flatten(end_dim=1), tgt_out.flatten())
+            loss = system.training_step((imgs, labels), batch_idx)
             loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(qat_model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(system.parameters(), 1.0)
             optimizer.step()
 
             epoch_loss += loss.item()
@@ -121,8 +111,8 @@ def main():
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     save_dict = {
-        "state_dict": qat_model.state_dict(),
-        "hyper_parameters": getattr(system, "hparams", {}),
+        "state_dict": system.model.state_dict(),
+        "hyper_parameters": dict(system.hparams) if hasattr(system, "hparams") else {},
     }
     torch.save(save_dict, args.output)
     print(f"[+] QAT training complete. Saved model to: {args.output}")

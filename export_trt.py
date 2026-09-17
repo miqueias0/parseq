@@ -26,6 +26,7 @@ def parse_args():
     parser.add_argument("--int8", action="store_true", default=True, help="Enable TensorRT INT8 mode")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (>=13)")
     parser.add_argument("--data_root", type=str, default="data", help="Path to dataset root for real activation calibration")
+    parser.add_argument("--max_batch_size", type=int, default=256, help="Maximum batch size for TensorRT profile (default: 256)")
     return parser.parse_args()
 
 
@@ -83,12 +84,14 @@ def main():
 
     # 2. Build TensorRT engine if TensorRT is installed and GPU is available
     if torch.cuda.is_available():
+        max_b = max(args.max_batch_size, 32)
+        opt_b = min(max_b, 64)
         engine_file = exporter.build_trt_engine(
             onnx_path=onnx_file,
             engine_path=args.engine_path,
             min_shape=(1, 3, 32, 128),
-            opt_shape=(8, 3, 32, 128),
-            max_shape=(32, 3, 32, 128),
+            opt_shape=(opt_b, 3, 32, 128),
+            max_shape=(max_b, 3, 32, 128),
             int8_mode=args.int8,
         )
         if engine_file:
