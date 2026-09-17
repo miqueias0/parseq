@@ -33,7 +33,7 @@ class QuantizeDequantizeFunc(torch.autograd.Function):
     Preserves exact NVIDIA TensorRT Q/DQ INT8 fusion patterns.
     """
     @staticmethod
-    def forward(ctx, x: Tensor, scale: Tensor, axis: Optional[int] = None) -> Tensor:
+    def forward(ctx, x: Tensor, scale: Tensor, zero_point: Tensor, axis: Optional[int] = None) -> Tensor:
         if axis == 0 and x.dim() >= 2:
             scale_b = scale.view(-1, *([1] * (x.dim() - 1)))
         else:
@@ -42,14 +42,13 @@ class QuantizeDequantizeFunc(torch.autograd.Function):
         return q * scale_b
 
     @staticmethod
-    def symbolic(g, x, scale, axis: Optional[int] = None):
-        zp = g.op("Constant", value_t=torch.tensor(0, dtype=torch.int8))
+    def symbolic(g, x, scale, zero_point, axis: Optional[int] = None):
         if axis is not None:
-            q = g.op("QuantizeLinear", x, scale, zp, axis_i=axis)
-            dq = g.op("DequantizeLinear", q, scale, zp, axis_i=axis)
+            q = g.op("QuantizeLinear", x, scale, zero_point, axis_i=axis)
+            dq = g.op("DequantizeLinear", q, scale, zero_point, axis_i=axis)
         else:
-            q = g.op("QuantizeLinear", x, scale, zp)
-            dq = g.op("DequantizeLinear", q, scale, zp)
+            q = g.op("QuantizeLinear", x, scale, zero_point)
+            dq = g.op("DequantizeLinear", q, scale, zero_point)
         return dq
 
 
@@ -66,16 +65,19 @@ class QDQLinear(nn.Module):
         self.bias = nn.Parameter(linear.bias.data.clone()) if linear.bias is not None else None
 
         sx = scale_x if isinstance(scale_x, torch.Tensor) else torch.tensor(scale_x, dtype=torch.float32)
-        self.register_buffer("scale_x", sx.float().squeeze())
+        self.register_buffer("scale_x", sx.clone().detach().float().squeeze())
+        self.register_buffer("zp_x", torch.tensor(0, dtype=torch.int8))
 
         if scale_w is None:
             max_w = self.weight.detach().abs().amax(dim=1)
             scale_w = torch.clamp(max_w / 127.0, min=1e-8)
-        self.register_buffer("scale_w", scale_w.float().view(-1))
+        sw = scale_w.clone().detach().float().view(-1)
+        self.register_buffer("scale_w", sw)
+        self.register_buffer("zp_w", torch.zeros(sw.numel(), dtype=torch.int8))
 
     def forward(self, x: Tensor) -> Tensor:
-        x_dq = QuantizeDequantizeFunc.apply(x, self.scale_x)
-        w_dq = QuantizeDequantizeFunc.apply(self.weight, self.scale_w, 0)
+        x_dq = QuantizeDequantizeFunc.apply(x, self.scale_x, self.zp_x)
+        w_dq = QuantizeDequantizeFunc.apply(self.weight, self.scale_w, self.zp_w, 0)
         return torch.nn.functional.linear(x_dq, w_dq, self.bias)
 
 
@@ -95,16 +97,19 @@ class QDQConv2d(nn.Module):
         self.bias = nn.Parameter(conv.bias.data.clone()) if conv.bias is not None else None
 
         sx = scale_x if isinstance(scale_x, torch.Tensor) else torch.tensor(scale_x, dtype=torch.float32)
-        self.register_buffer("scale_x", sx.float().squeeze())
+        self.register_buffer("scale_x", sx.clone().detach().float().squeeze())
+        self.register_buffer("zp_x", torch.tensor(0, dtype=torch.int8))
 
         if scale_w is None:
             max_w = self.weight.detach().abs().amax(dim=(1, 2, 3))
             scale_w = torch.clamp(max_w / 127.0, min=1e-8)
-        self.register_buffer("scale_w", scale_w.float().view(-1))
+        sw = scale_w.clone().detach().float().view(-1)
+        self.register_buffer("scale_w", sw)
+        self.register_buffer("zp_w", torch.zeros(sw.numel(), dtype=torch.int8))
 
     def forward(self, x: Tensor) -> Tensor:
-        x_dq = QuantizeDequantizeFunc.apply(x, self.scale_x)
-        w_dq = QuantizeDequantizeFunc.apply(self.weight, self.scale_w, 0)
+        x_dq = QuantizeDequantizeFunc.apply(x, self.scale_x, self.zp_x)
+        w_dq = QuantizeDequantizeFunc.apply(self.weight, self.scale_w, self.zp_w, 0)
         return torch.nn.functional.conv2d(x_dq, w_dq, self.bias, self.stride, self.padding)
 
 
@@ -121,17 +126,18 @@ class QDQAttention(nn.Module):
         self.proj = QDQLinear(attn.proj, scale_x=scale_x, scale_w=scale_w_proj)
         s_act = scale_x if isinstance(scale_x, torch.Tensor) else torch.tensor(scale_x, dtype=torch.float32)
         self.register_buffer("scale_act", s_act.clone().detach().float().squeeze())
+        self.register_buffer("zp_act", torch.tensor(0, dtype=torch.int8))
 
     def forward(self, x: Tensor) -> Tensor:
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q = q * self.scale
-        q_dq = QuantizeDequantizeFunc.apply(q, self.scale_act)
-        k_dq = QuantizeDequantizeFunc.apply(k, self.scale_act)
+        q_dq = QuantizeDequantizeFunc.apply(q, self.scale_act, self.zp_act)
+        k_dq = QuantizeDequantizeFunc.apply(k, self.scale_act, self.zp_act)
         attn = (q_dq @ k_dq.transpose(-2, -1)).softmax(dim=-1)
-        attn_dq = QuantizeDequantizeFunc.apply(attn, self.scale_act)
-        v_dq = QuantizeDequantizeFunc.apply(v, self.scale_act)
+        attn_dq = QuantizeDequantizeFunc.apply(attn, self.scale_act, self.zp_act)
+        v_dq = QuantizeDequantizeFunc.apply(v, self.scale_act, self.zp_act)
         x = attn_dq @ v_dq
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
