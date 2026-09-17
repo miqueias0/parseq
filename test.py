@@ -80,6 +80,7 @@ def setup_tensorrt_library_paths():
 setup_tensorrt_library_paths()
 
 from strhub.data.module import SceneTextDataModule
+from strhub.models.base import BatchResult
 from strhub.models.utils import load_from_checkpoint, parse_model_args
 
 
@@ -131,6 +132,7 @@ class ONNXModelWrapper:
         from strhub.models.base import BatchResult
 
         self.edit_distance = edit_distance
+        self.BatchResult = BatchResult
         mll = kwargs.get('max_label_length', 25)
         self.ref_model = load_from_checkpoint(ref_checkpoint, max_label_length=mll, **kwargs).eval()
         self.hparams = self.ref_model.hparams
@@ -198,7 +200,7 @@ class ONNXModelWrapper:
                 correct += 1
             total += 1
             label_length += len(pred)
-        return dict(output=self.BatchResult(total, correct, ned, confidence, label_length, None, None))
+        return dict(output=BatchResult(total, correct, ned, confidence, label_length, None, None))
 
 
 @torch.inference_mode()
