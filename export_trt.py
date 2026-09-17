@@ -37,14 +37,17 @@ def main():
 
     # Load model
     model = create_model("parseq", pretrained=False)
+    clean_state = {}
+    scale_dict = {}
     if args.checkpoint and os.path.isfile(args.checkpoint):
         print(f"[*] Loading checkpoint from {args.checkpoint}...")
         ckpt = torch.load(args.checkpoint, map_location="cpu")
         state_dict = ckpt.get("state_dict", ckpt)
         clean_state = {k.replace("model.", ""): v for k, v in state_dict.items()}
         model.load_state_dict(clean_state, strict=False)
+        scale_dict = ckpt.get("scale_dict", {})
 
-    exporter = TensorRTExporter(model)
+    exporter = TensorRTExporter(model, checkpoint_state=clean_state, scale_dict=scale_dict)
 
     # 1. Export ONNX graph with Q/DQ pairing
     onnx_file = exporter.export_onnx(

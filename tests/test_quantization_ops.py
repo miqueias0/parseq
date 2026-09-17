@@ -220,6 +220,22 @@ class TestQuantizationOps(unittest.TestCase):
         head = getattr(base_model, "head", getattr(base_model, "model", None).head)
         self.assertEqual(logits.shape[2], head.out_features)
 
+    def test_tensorrt_qdq_onnx_export(self):
+        """Tests export of PARSeq encoder to ONNX with explicit QuantizeLinear/DequantizeLinear nodes."""
+        import onnx
+        from strhub.quantization.trt_exporter import TensorRTExporter
+
+        base_model = create_model("parseq", pretrained=False)
+        exporter = TensorRTExporter(base_model)
+        out_onnx = "/tmp/test_unit_qdq.onnx"
+        exporter.export_onnx(out_onnx, opset_version=17, device="cpu")
+
+        model_proto = onnx.load(out_onnx)
+        onnx.checker.check_model(model_proto)
+        ops = set(n.op_type for n in model_proto.graph.node)
+        self.assertIn("QuantizeLinear", ops)
+        self.assertIn("DequantizeLinear", ops)
+
 
 if __name__ == "__main__":
     unittest.main()
