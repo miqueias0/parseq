@@ -114,7 +114,7 @@ def main():
         "trt_engine_cache_enable": True,
         "trt_engine_cache_path": trt_cache_dir,
         "trt_profile_min_shapes": f"images:1x3x{args.height}x{args.width}",
-        "trt_profile_max_shapes": f"images:{max(args.batch_size, 4)}x3x{args.height}x{args.width}",
+        "trt_profile_max_shapes": f"images:{max(args.batch_size, 512)}x3x{args.height}x{args.width}",
         "trt_profile_opt_shapes": f"images:{args.batch_size}x3x{args.height}x{args.width}",
     }
 

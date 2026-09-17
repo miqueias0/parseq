@@ -154,6 +154,8 @@ class ONNXModelWrapper:
         trt_cache_dir = os.path.join(os.path.dirname(str(onnx_path)) or ".", "trt_cache")
         os.makedirs(trt_cache_dir, exist_ok=True)
         img_size = getattr(self.hparams, 'img_size', (32, 128))
+        eval_batch = kwargs.pop('batch_size', 512)
+        max_batch = max(eval_batch, 512)
         trt_options = {
             "trt_fp16_enable": True,
             "trt_int8_enable": True,
@@ -161,8 +163,8 @@ class ONNXModelWrapper:
             "trt_engine_cache_enable": True,
             "trt_engine_cache_path": trt_cache_dir,
             "trt_profile_min_shapes": f"images:1x3x{img_size[0]}x{img_size[1]}",
-            "trt_profile_max_shapes": f"images:64x3x{img_size[0]}x{img_size[1]}",
-            "trt_profile_opt_shapes": f"images:16x3x{img_size[0]}x{img_size[1]}",
+            "trt_profile_max_shapes": f"images:{max_batch}x3x{img_size[0]}x{img_size[1]}",
+            "trt_profile_opt_shapes": f"images:{eval_batch}x3x{img_size[0]}x{img_size[1]}",
         }
         if provider_choice == "tensorrt" or (provider_choice == "auto" and "TensorrtExecutionProvider" in available and "cuda" in device):
             providers = [("TensorrtExecutionProvider", trt_options), "CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -237,7 +239,14 @@ def main():
 
     if args.checkpoint.endswith('.onnx'):
         ref_ckpt = getattr(args, 'ref_checkpoint', 'pretrained=parseq')
-        model = ONNXModelWrapper(args.checkpoint, ref_checkpoint=ref_ckpt, device=args.device, provider=args.provider, **kwargs)
+        model = ONNXModelWrapper(
+            args.checkpoint,
+            ref_checkpoint=ref_ckpt,
+            device=args.device,
+            provider=args.provider,
+            batch_size=args.batch_size,
+            **kwargs,
+        )
         active_p = model.session.get_providers()[0]
         print(f"Loaded ONNX Model: {args.checkpoint} (ExecutionProvider: {active_p})")
     else:
