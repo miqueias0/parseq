@@ -133,13 +133,8 @@ class QDQAttention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q = q * self.scale
-        q_dq = QuantizeDequantizeFunc.apply(q, self.scale_act, self.zp_act)
-        k_dq = QuantizeDequantizeFunc.apply(k, self.scale_act, self.zp_act)
-        attn = (q_dq @ k_dq.transpose(-2, -1)).softmax(dim=-1)
-        attn_dq = QuantizeDequantizeFunc.apply(attn, self.scale_act, self.zp_act)
-        v_dq = QuantizeDequantizeFunc.apply(v, self.scale_act, self.zp_act)
-        x = attn_dq @ v_dq
-        x = x.transpose(1, 2).reshape(B, N, C)
+        attn = (q @ k.transpose(-2, -1)).softmax(dim=-1)
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         return x
 
@@ -238,6 +233,41 @@ class TensorRTExporter:
             self.model = model
         self.checkpoint_state = checkpoint_state or {}
         self.scale_dict = scale_dict or {}
+
+    def calibrate_scales(self, dataloader, num_batches: int = 20, device: str = "cpu"):
+        """
+        Calibrates real layer-by-layer activation scales using actual dataset images.
+        """
+        self.model.eval().to(device)
+        max_acts = {}
+
+        def hook_fn(name):
+            def fn(mod, inp, out):
+                x = inp[0] if isinstance(inp, tuple) else inp
+                cur_max = x.detach().abs().amax().item()
+                if name not in max_acts or cur_max > max_acts[name]:
+                    max_acts[name] = cur_max
+            return fn
+
+        hooks = []
+        for name, mod in self.model.named_modules():
+            if isinstance(mod, (nn.Linear, nn.Conv2d)):
+                hooks.append(mod.register_forward_hook(hook_fn(name)))
+
+        print(f"[*] Calibrating activation scales on {num_batches} batches of real dataset...")
+        with torch.inference_mode():
+            for i, batch in enumerate(dataloader):
+                if i >= num_batches:
+                    break
+                imgs = batch[0] if isinstance(batch, (list, tuple)) else batch
+                self.model.encode(imgs.to(device))
+
+        for h in hooks:
+            h.remove()
+
+        for name, m_val in max_acts.items():
+            self.checkpoint_state[name + ".scale_x"] = torch.tensor(max(m_val / 127.0, 1e-5), dtype=torch.float32)
+        print(f"[+] Calibrated activation scales for {len(max_acts)} layers.")
 
     def export_onnx(
         self,

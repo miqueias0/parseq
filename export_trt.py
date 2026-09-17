@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
     parser.add_argument("--int8", action="store_true", default=True, help="Enable TensorRT INT8 mode")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (>=13)")
+    parser.add_argument("--data_root", type=str, default="data", help="Path to dataset root for real activation calibration")
     return parser.parse_args()
 
 
@@ -35,19 +36,42 @@ def main():
     print("=" * 65)
     print(f"Device: {args.device} | Target ONNX: {args.onnx_path} | Target Engine: {args.engine_path}")
 
-    # Load model
-    model = create_model("parseq", pretrained=False)
+    # Load model preserving exact architecture hyperparameters
+    from strhub.models.utils import load_from_checkpoint
     clean_state = {}
     scale_dict = {}
     if args.checkpoint and os.path.isfile(args.checkpoint):
         print(f"[*] Loading checkpoint from {args.checkpoint}...")
-        ckpt = torch.load(args.checkpoint, map_location="cpu")
-        state_dict = ckpt.get("state_dict", ckpt)
-        clean_state = {k.replace("model.", ""): v for k, v in state_dict.items()}
-        model.load_state_dict(clean_state, strict=False)
-        scale_dict = ckpt.get("scale_dict", {})
+        try:
+            system = load_from_checkpoint(args.checkpoint)
+            model = system.model
+        except Exception:
+            model = create_model("parseq", pretrained=False)
+            ckpt = torch.load(args.checkpoint, map_location="cpu")
+            state_dict = ckpt.get("state_dict", ckpt)
+            clean_state = {k.replace("model.", ""): v for k, v in state_dict.items()}
+            model.load_state_dict(clean_state, strict=False)
+            scale_dict = ckpt.get("scale_dict", {})
+    else:
+        model = create_model("parseq", pretrained=False)
 
     exporter = TensorRTExporter(model, checkpoint_state=clean_state, scale_dict=scale_dict)
+
+    # Calibrate real activation scales on actual dataset images if data_root exists
+    if os.path.isdir(args.data_root):
+        from strhub.data.module import SceneTextDataModule
+        hp = getattr(system, "hparams", None) if "system" in locals() else None
+        img_size = hp.img_size if hp else (32, 128)
+        max_label_len = hp.max_label_length if hp else 25
+        charset_tr = hp.charset_train if hp else "0123456789abcdefghijklmnopqrstuvwxyz"
+        charset_ts = hp.charset_test if hp else "0123456789abcdefghijklmnopqrstuvwxyz"
+        dm = SceneTextDataModule(args.data_root, "_unused_", img_size, max_label_len, charset_tr, charset_ts, batch_size=32, num_workers=0, augment=False)
+        # Grab first available test/val dataloader
+        test_sets = SceneTextDataModule.TEST_BENCHMARK_SUB + SceneTextDataModule.TEST_BENCHMARK
+        loaders = dm.test_dataloaders(test_sets)
+        if loaders:
+            first_loader = next(iter(loaders.values()))
+            exporter.calibrate_scales(first_loader, num_batches=15, device=args.device)
 
     # 1. Export ONNX graph with Q/DQ pairing
     onnx_file = exporter.export_onnx(

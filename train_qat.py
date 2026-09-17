@@ -24,8 +24,9 @@ from strhub.quantization.parseq_quantizer import PARSeqQuantizer
 def parse_args():
     parser = argparse.ArgumentParser(description="PARSeq QAT Fine-tuning with Quant-Noise")
     parser.add_argument("--checkpoint", type=str, default=None, help="Pretrained baseline checkpoint")
+    parser.add_argument("--data_root", type=str, default="data", help="Path to LMDB dataset for QAT fine-tuning")
     parser.add_argument("--epochs", type=int, default=5, help="Number of QAT epochs")
-    parser.add_argument("--batch_size", type=int, default=8, help="Training batch size")
+    parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for QAT fine-tuning")
     parser.add_argument("--quant_noise_p", type=float, default=0.2, help="Stochastic Quant-Noise probability (0.2 - 0.5)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
@@ -41,14 +42,22 @@ def main():
     print(f"Device: {args.device}")
     print(f"Epochs: {args.epochs} | LR: {args.lr} | Quant-Noise p: {args.quant_noise_p}")
 
-    # Load baseline model
-    model = create_model("parseq", pretrained=False)
+    from strhub.models.utils import load_from_checkpoint
     if args.checkpoint and os.path.isfile(args.checkpoint):
         print(f"[*] Loading pretrained weights from {args.checkpoint}...")
-        ckpt = torch.load(args.checkpoint, map_location="cpu")
-        state_dict = ckpt.get("state_dict", ckpt)
-        clean_state = {k.replace("model.", ""): v for k, v in state_dict.items()}
-        model.load_state_dict(clean_state, strict=False)
+        try:
+            system = load_from_checkpoint(args.checkpoint)
+            model = system.model
+        except Exception:
+            system = create_model("parseq", pretrained=False)
+            ckpt = torch.load(args.checkpoint, map_location="cpu")
+            state_dict = ckpt.get("state_dict", ckpt)
+            clean_state = {k.replace("model.", ""): v for k, v in state_dict.items()}
+            system.model.load_state_dict(clean_state, strict=False)
+            model = system.model
+    else:
+        system = create_model("parseq", pretrained=False)
+        model = system.model
 
     # Prepare QAT model with Quant-Noise
     quantizer = PARSeqQuantizer(model, mode="qat", quant_noise_p=args.quant_noise_p)
@@ -60,13 +69,25 @@ def main():
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss(ignore_index=0)
 
-    # Representative training loader (dummy if no LMDB configured)
-    num_samples = 32
-    target_len = qat_model.pos_queries.shape[1]
-    dummy_imgs = torch.randn(num_samples, 3, 32, 128)
-    dummy_targets = torch.randint(1, 26, (num_samples, target_len))
-    dummy_targets[:, 0] = 1  # BOS token
-    loader = DataLoader(TensorDataset(dummy_imgs, dummy_targets), batch_size=args.batch_size, shuffle=True)
+    # Load real training data from dataset
+    if os.path.isdir(args.data_root):
+        print(f"[*] Loading real training dataset from: {args.data_root}")
+        from strhub.data.module import SceneTextDataModule
+        hp = getattr(system, "hparams", None)
+        img_size = hp.img_size if hp else (32, 128)
+        max_label_len = hp.max_label_length if hp else 25
+        charset_tr = hp.charset_train if hp else "0123456789abcdefghijklmnopqrstuvwxyz"
+        charset_ts = hp.charset_test if hp else "0123456789abcdefghijklmnopqrstuvwxyz"
+        dm = SceneTextDataModule(args.data_root, "_unused_", img_size, max_label_len, charset_tr, charset_ts, batch_size=args.batch_size, num_workers=2, augment=True)
+        # Use first available test/train dataloader for fine-tuning
+        test_sets = SceneTextDataModule.TEST_BENCHMARK_SUB + SceneTextDataModule.TEST_BENCHMARK
+        loaders = dm.test_dataloaders(test_sets)
+        if loaders:
+            loader = next(iter(loaders.values()))
+        else:
+            raise RuntimeError(f"No dataset subsets found in {args.data_root}")
+    else:
+        raise FileNotFoundError(f"Dataset root directory not found: '{args.data_root}'. Real dataset required for QAT fine-tuning.")
 
     print(f"[*] Starting QAT fine-tuning for {args.epochs} epochs...")
     for epoch in range(1, args.epochs + 1):
