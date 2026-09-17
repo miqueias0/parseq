@@ -134,7 +134,7 @@ class ONNXModelWrapper:
         mll = kwargs.get('max_label_length', 25)
         self.ref_model = load_from_checkpoint(ref_checkpoint, max_label_length=mll, **kwargs).eval()
         self.hparams = self.ref_model.hparams
-
+        provider_choice = kwargs.pop('provider', 'auto')
         # Ensure all shapes are inferred for TensorRT Execution Provider
         if provider_choice in ["tensorrt", "auto"] and "cuda" in device:
             try:
@@ -150,7 +150,6 @@ class ONNXModelWrapper:
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = 4
 
-        provider_choice = kwargs.pop('provider', 'auto')
         available = ort.get_available_providers()
         trt_cache_dir = os.path.join(os.path.dirname(str(onnx_path)) or ".", "trt_cache")
         os.makedirs(trt_cache_dir, exist_ok=True)
