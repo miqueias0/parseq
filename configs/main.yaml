@@ -1,8 +1,8 @@
 defaults:
   - _self_
   - model: parseq
-  - charset: 94_full
-  - dataset: motorcycle_224x224_pad
+  - charset: alpr
+  - dataset: VeSV_pad
 
 model:
   _convert_: all
@@ -12,7 +12,7 @@ model:
   charset_train: ???
   # For charset_test, ordering doesn't matter.
   charset_test: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-  batch_size: 128
+  batch_size: 256
   weight_decay: 0.0
 #  weight_decay: 1e-4
   warmup_pct: 0.075  # equivalent to 1.5 epochs of warm up
@@ -44,10 +44,13 @@ trainer:
 ckpt_path: null
 pretrained: null
 
+dataset: ${data.train_dir}
+experiment_name: ${oc.select:experiment,default}
+
 hydra:
   output_subdir: config
   run:
-    dir: outputs/${model.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    dir: outputs/${model.name}/${dataset}/${experiment_name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
   sweep:
-    dir: multirun/${model.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    dir: multirun/${model.name}/${dataset}/${experiment_name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
     subdir: ${hydra.job.override_dirname}

@@ -263,6 +263,84 @@ We use [Ray Tune](https://www.ray.io/ray-tune) for automated parameter tuning of
 ./tune.py +experiment=tune_abinet-lm  # find the optimum learning rate for ABINet's language model
 ```
 
+---
+
+## End-to-End Integer-Only & Accelerated INT8 Quantization Framework
+
+PARSeq now includes a production-grade, 100% integral **Integer-Only and Accelerated INT8 Quantization Framework** (`strhub.quantization`), supporting deployment on both **CUDA (Tensor Cores with native INT8 speedup)** and **CPU (x86_64 VNNI / AVX-512)**.
+
+### Key Theoretical & Architectural Advances
+1. **100% Integer-Only Execution**: Zero FP32/FP16 operations during integer-only inference. Covers the entire pipeline from `QuantizedPatchEmbed` (INT8 image conv + INT32 accumulation + dyadic positional embedding addition), ViT Encoder blocks, autoregressive/permutated Transformer Decoder layers, residual connections (`DyadicResidualAdd`), and the linear prediction head.
+2. **IPTQ-ViT (Kim et al., 2025)**:
+   - **Data-aware Poly-GELU**: Quartic polynomial approximation ($D=4$) with pre-quantized vision coefficients $a = -0.019913, b = -2.698088$:
+     $$L_{\text{ours}}(x) = \operatorname{sign}(x) \cdot \left[ a \cdot \left(\operatorname{clip}(|x|, \max=-b) + b\right)^4 + 1 \right]$$
+   - **Efficient Bit-Softmax**: Base-2 Taylor expansion with shift-add $\Phi(x) = (x \gg 1) + (x \gg 3) + (x \gg 4)$ and scaled integer division (`IntDiv` with guard shift $M=28$).
+   - **Unified Metric ($\Omega$) Search**: Automatic 3-stage search balancing Sensitivity ($\mathcal{Q}$ / SQNR dB), Perturbation ($\mathcal{P}$), and Computational Cost ($\mathcal{C}$) via harmonic mean:
+     $$\Omega = \frac{3}{N(\mathcal{Q})^{-1} + N(\mathcal{P}) + N(\mathcal{C})}, \quad N(x) = \ln(1 + e^x)$$
+3. **HAWQ-V3 (Yao et al., 2021)**:
+   - Rescaling via static dyadic fractions ($b / 2^c$) with INT32 accumulators.
+   - **Dyadic Residual Addition**: Direct integer alignment of main and residual branches:
+     $$q_a = \text{DN}(S_m / S_a) q_m + \text{DN}(S_r / S_a) q_r$$
+4. **I-BERT (Kim et al., 2021)**:
+   - Pure integer `IntegerLayerNorm` with Newton-Raphson integer square root ($\lfloor \sqrt{V} \rfloor$) converging in $\le 4$ iterations with zero hardware float or division instructions.
+5. **Quant-Noise (Fan et al., 2021)**:
+   - Stochastic fake-quantization ($p \in [0.2, 0.5]$) during QAT fine-tuning, keeping unquantized gradient paths open for stable Transformer convergence.
+6. **TensorRT Q/DQ Engine Compilation**:
+   - Canonical `QuantizeLinear` / `DequantizeLinear` pairing designed for NVIDIA TensorRT graph fusions (`QKV GEMM`, `SkipLayerNorm`, `Fast GELU`).
+
+---
+
+### CLI Reproduction Commands
+
+#### 1. Unit Testing & Operator Parity
+Run the complete unit test suite covering all integer operators, dyadic arithmetic, and end-to-end model execution:
+```bash
+python3 -m unittest tests/test_quantization_ops.py
+```
+
+#### 2. PTQ Calibration with Unified Metric ($\Omega$)
+Calibrate activation scales with KL divergence and run the 3-stage Unified Metric search:
+```bash
+python3 calibrate_int8.py \
+    --checkpoint <path_to_checkpoint.pt> \
+    --num_batches 100 \
+    --batch_size 16 \
+    --device cuda \
+    --output parseq_int8_calibrated.pt
+```
+
+#### 3. Quantization-Aware Training (QAT) with Quant-Noise
+Fine-tune PARSeq with stochastic quantization noise and STE gradients:
+```bash
+python3 train_qat.py \
+    --checkpoint <path_to_checkpoint.pt> \
+    --epochs 5 \
+    --lr 1e-4 \
+    --quant_noise_p 0.2 \
+    --batch_size 8 \
+    --device cuda \
+    --output parseq_qat_finetuned.pt
+```
+
+#### 4. ONNX Q/DQ Export & TensorRT Engine Compilation
+Export the model to ONNX with Q/DQ pairing and compile into a serialized TensorRT INT8 Engine:
+```bash
+python3 export_trt.py \
+    --checkpoint parseq_qat_finetuned.pt \
+    --onnx_path parseq_qdq.onnx \
+    --engine_path parseq_int8.engine \
+    --int8 \
+    --device cuda
+```
+
+#### 5. Systematic Multi-Model Benchmarking
+Measure Word Accuracy (%), Character Accuracy (%), Latency P50/P90/P99 (ms), and Throughput (FPS):
+```bash
+python3 benchmark_all.py --batch_size 8 --runs 50 --device cuda
+```
+
+---
+
 ## Citation
 ```bibtex
 @InProceedings{bautista2022parseq,

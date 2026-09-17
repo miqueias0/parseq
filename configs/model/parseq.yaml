@@ -3,7 +3,6 @@ _target_: strhub.models.parseq.system.PARSeq
 
 # Data
 patch_size: [ 4, 8 ]  # [ height, width ]
-#patch_size: [ 8, 8 ]  # [ height, width ]
 
 # Architecture
 embed_dim: 384
@@ -22,5 +21,5 @@ perm_mirrored: true
 dropout: 0.1
 
 # Decoding mode (test)
-decode_ar: true
-refine_iters: 1
+decode_ar: false
+refine_iters: 0
