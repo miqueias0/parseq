@@ -117,16 +117,20 @@ class QDQAttention(nn.Module):
     """
     Vision Transformer Attention block with explicit Q/DQ nodes around QKV GEMMs and BMMs.
     """
-    def __init__(self, attn, scale_x: float = 0.05, scale_w_qkv: Optional[Tensor] = None, scale_w_proj: Optional[Tensor] = None):
+    def __init__(
+        self,
+        attn,
+        scale_x_qkv: float = 0.05,
+        scale_x_proj: float = 0.05,
+        scale_w_qkv: Optional[Tensor] = None,
+        scale_w_proj: Optional[Tensor] = None,
+    ):
         super().__init__()
         self.num_heads = attn.num_heads
         self.head_dim = attn.head_dim
         self.scale = attn.scale
-        self.qkv = QDQLinear(attn.qkv, scale_x=scale_x, scale_w=scale_w_qkv)
-        self.proj = QDQLinear(attn.proj, scale_x=scale_x, scale_w=scale_w_proj)
-        s_act = scale_x if isinstance(scale_x, torch.Tensor) else torch.tensor(scale_x, dtype=torch.float32)
-        self.register_buffer("scale_act", s_act.clone().detach().float().squeeze())
-        self.register_buffer("zp_act", torch.tensor(0, dtype=torch.int8))
+        self.qkv = QDQLinear(attn.qkv, scale_x=scale_x_qkv, scale_w=scale_w_qkv)
+        self.proj = QDQLinear(attn.proj, scale_x=scale_x_proj, scale_w=scale_w_proj)
 
     def forward(self, x: Tensor) -> Tensor:
         B, N, C = x.shape
@@ -143,11 +147,18 @@ class QDQMlp(nn.Module):
     """
     Vision Transformer MLP block with explicit Q/DQ nodes.
     """
-    def __init__(self, mlp, scale_x: float = 0.05, scale_w_fc1: Optional[Tensor] = None, scale_w_fc2: Optional[Tensor] = None):
+    def __init__(
+        self,
+        mlp,
+        scale_x_fc1: float = 0.05,
+        scale_x_fc2: float = 0.05,
+        scale_w_fc1: Optional[Tensor] = None,
+        scale_w_fc2: Optional[Tensor] = None,
+    ):
         super().__init__()
-        self.fc1 = QDQLinear(mlp.fc1, scale_x=scale_x, scale_w=scale_w_fc1)
+        self.fc1 = QDQLinear(mlp.fc1, scale_x=scale_x_fc1, scale_w=scale_w_fc1)
         self.act = mlp.act
-        self.fc2 = QDQLinear(mlp.fc2, scale_x=scale_x, scale_w=scale_w_fc2)
+        self.fc2 = QDQLinear(mlp.fc2, scale_x=scale_x_fc2, scale_w=scale_w_fc2)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.fc2(self.act(self.fc1(x)))
@@ -163,14 +174,16 @@ class QDQBlock(nn.Module):
         self.norm1 = blk.norm1
         self.attn = QDQAttention(
             blk.attn,
-            scale_x=scales.get("attn.qkv.scale_x", scale_x),
+            scale_x_qkv=scales.get("attn.qkv.scale_x", scale_x),
+            scale_x_proj=scales.get("attn.proj.scale_x", scale_x),
             scale_w_qkv=scales.get("attn.qkv.scale_w", None),
             scale_w_proj=scales.get("attn.proj.scale_w", None),
         )
         self.norm2 = blk.norm2
         self.mlp = QDQMlp(
             blk.mlp,
-            scale_x=scales.get("mlp.fc1.scale_x", scale_x),
+            scale_x_fc1=scales.get("mlp.fc1.scale_x", scale_x),
+            scale_x_fc2=scales.get("mlp.fc2.scale_x", scale_x),
             scale_w_fc1=scales.get("mlp.fc1.scale_w", None),
             scale_w_fc2=scales.get("mlp.fc2.scale_w", None),
         )
@@ -189,21 +202,31 @@ class QDQViTEncoder(nn.Module):
         super().__init__()
         state_dict = state_dict or {}
         scale_dict = scale_dict or {}
+        # Merge scale_dict and state_dict
+        all_scales = {**scale_dict, **state_dict}
 
-        proj_sx = state_dict.get("encoder.patch_embed.proj.scale_x", 0.05)
-        proj_sw = state_dict.get("encoder.patch_embed.proj.scale_w", None)
+        def _get_scale(keys, default=0.05):
+            for k in keys:
+                if k in all_scales and all_scales[k] is not None:
+                    return all_scales[k]
+            return default
+
+        proj_sx = _get_scale(["encoder.patch_embed.proj.scale_x", "patch_embed.proj.scale_x", "patch_embed_proj.scale_x"], 0.05)
+        proj_sw = _get_scale(["encoder.patch_embed.proj.scale_w", "patch_embed.proj.scale_w", "patch_embed_proj.scale_w"], None)
         self.patch_embed_proj = QDQConv2d(base_encoder.patch_embed.proj, scale_x=proj_sx, scale_w=proj_sw)
         self.pos_embed = nn.Parameter(base_encoder.pos_embed.data.clone())
 
         blocks = []
         for i, blk in enumerate(base_encoder.blocks):
             blk_scales = {
-                "attn.qkv.scale_x": state_dict.get(f"encoder.blocks.{i}.attn.qkv.scale_x", 0.05),
-                "attn.qkv.scale_w": state_dict.get(f"encoder.blocks.{i}.attn.qkv.scale_w", None),
-                "attn.proj.scale_w": state_dict.get(f"encoder.blocks.{i}.attn.proj.scale_w", None),
-                "mlp.fc1.scale_x": state_dict.get(f"encoder.blocks.{i}.mlp.fc1.scale_x", 0.05),
-                "mlp.fc1.scale_w": state_dict.get(f"encoder.blocks.{i}.mlp.fc1.scale_w", None),
-                "mlp.fc2.scale_w": state_dict.get(f"encoder.blocks.{i}.mlp.fc2.scale_w", None),
+                "attn.qkv.scale_x": _get_scale([f"encoder.blocks.{i}.attn.qkv.scale_x", f"blocks.{i}.attn.qkv.scale_x"], 0.05),
+                "attn.qkv.scale_w": _get_scale([f"encoder.blocks.{i}.attn.qkv.scale_w", f"blocks.{i}.attn.qkv.scale_w"], None),
+                "attn.proj.scale_x": _get_scale([f"encoder.blocks.{i}.attn.proj.scale_x", f"blocks.{i}.attn.proj.scale_x"], 0.05),
+                "attn.proj.scale_w": _get_scale([f"encoder.blocks.{i}.attn.proj.scale_w", f"blocks.{i}.attn.proj.scale_w"], None),
+                "mlp.fc1.scale_x": _get_scale([f"encoder.blocks.{i}.mlp.fc1.scale_x", f"blocks.{i}.mlp.fc1.scale_x"], 0.05),
+                "mlp.fc1.scale_w": _get_scale([f"encoder.blocks.{i}.mlp.fc1.scale_w", f"blocks.{i}.mlp.fc1.scale_w"], None),
+                "mlp.fc2.scale_x": _get_scale([f"encoder.blocks.{i}.mlp.fc2.scale_x", f"blocks.{i}.mlp.fc2.scale_x"], 0.05),
+                "mlp.fc2.scale_w": _get_scale([f"encoder.blocks.{i}.mlp.fc2.scale_w", f"blocks.{i}.mlp.fc2.scale_w"], None),
             }
             blocks.append(QDQBlock(blk, scales=blk_scales))
         self.blocks = nn.ModuleList(blocks)
@@ -338,27 +361,10 @@ class TensorRTExporter:
                     print("[!] TensorRT Parser Error:", parser.get_error(error))
                 return None
 
-        has_qdq = getattr(network, "has_explicit_quantization", False)
-        print(f"[*] Network explicit Q/DQ quantization detected: {has_qdq}")
-
         # Enable INT8 and FP16 builder flags
         if int8_mode and builder.platform_has_fast_int8:
             config.set_flag(trt.BuilderFlag.INT8)
-            print("[+] TensorRT INT8 mode enabled.")
-
-            # If network does not have explicit Q/DQ, provide dynamic ranges to prevent builder error
-            if not has_qdq:
-                print("[*] Applying fallback tensor dynamic ranges for implicit INT8 calibration...")
-                for i in range(network.num_inputs):
-                    inp = network.get_input(i)
-                    if inp.is_execution_tensor and not inp.dynamic_range:
-                        inp.dynamic_range = (-1.0, 1.0)
-                for i in range(network.num_layers):
-                    layer = network.get_layer(i)
-                    for j in range(layer.num_outputs):
-                        out_t = layer.get_output(j)
-                        if out_t.is_execution_tensor and not out_t.dynamic_range:
-                            out_t.dynamic_range = (-16.0, 16.0)
+            print("[+] TensorRT INT8 mode enabled (using explicit Q/DQ quantization from graph).")
 
         if builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)

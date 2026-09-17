@@ -67,7 +67,8 @@ def main():
 
     optimizer = AdamW(qat_model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    pad_id = getattr(system.tokenizer, "pad_id", 0)
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
     # Load real training data from dataset
     if os.path.isdir(args.data_root):
@@ -92,17 +93,20 @@ def main():
     print(f"[*] Starting QAT fine-tuning for {args.epochs} epochs...")
     for epoch in range(1, args.epochs + 1):
         epoch_loss = 0.0
-        for batch_idx, (imgs, targets) in enumerate(loader):
-            imgs, targets = imgs.to(args.device), targets.to(args.device)
+        for batch_idx, (imgs, labels) in enumerate(loader):
+            imgs = imgs.to(args.device)
+            targets = system.tokenizer.encode(labels, device=args.device)
             optimizer.zero_grad()
 
             # Forward pass through QAT model
             memory = qat_model.encode(imgs)
             # Decoder forward
-            tgt_out = qat_model.decode(targets, memory)
-            logits = qat_model.head(tgt_out)
+            tgt_in = targets[:, :-1]
+            tgt_out = targets[:, 1:]
+            out = qat_model.decode(tgt_in, memory)
+            logits = qat_model.head(out)
 
-            loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
+            loss = criterion(logits.flatten(end_dim=1), tgt_out.flatten())
             loss.backward()
 
             # Gradient clipping
@@ -116,7 +120,11 @@ def main():
         print(f"Epoch [{epoch}/{args.epochs}] - Loss: {avg_loss:.4f} | LR: {scheduler.get_last_lr()[0]:.6f}")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
-    torch.save({"state_dict": qat_model.state_dict()}, args.output)
+    save_dict = {
+        "state_dict": qat_model.state_dict(),
+        "hyper_parameters": getattr(system, "hparams", {}),
+    }
+    torch.save(save_dict, args.output)
     print(f"[+] QAT training complete. Saved model to: {args.output}")
     print("=" * 65)
 

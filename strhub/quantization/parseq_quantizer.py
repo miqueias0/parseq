@@ -245,20 +245,33 @@ class IntegerPARSeq(nn.Module):
 
         # 2. Integer ViT Encoder Blocks
         self.encoder_blocks = nn.ModuleList()
-        for blk in enc.blocks:
+
+        def _get_s(keys, default=scale_default):
+            for k in keys:
+                if k in self.scale_dict and self.scale_dict[k] is not None:
+                    v = self.scale_dict[k]
+                    return v.item() if isinstance(v, Tensor) else float(v)
+            return default
+
+        for i, blk in enumerate(enc.blocks):
             int_blk = IntegerEncoderBlock(
                 dim=self.embed_dim,
                 num_heads=blk.attn.num_heads,
                 mlp_ratio=4.0,
                 scale=scale_default,
             )
-            # Transfer and quantize weights
+            # Transfer and quantize weights with per-layer scales
+            qkv_sx = _get_s([f"encoder.blocks.{i}.attn.qkv.scale_x", f"blocks.{i}.attn.qkv.scale_x"])
+            proj_sx = _get_s([f"encoder.blocks.{i}.attn.proj.scale_x", f"blocks.{i}.attn.proj.scale_x"])
+            fc1_sx = _get_s([f"encoder.blocks.{i}.mlp.fc1.scale_x", f"blocks.{i}.mlp.fc1.scale_x"])
+            fc2_sx = _get_s([f"encoder.blocks.{i}.mlp.fc2.scale_x", f"blocks.{i}.mlp.fc2.scale_x"])
+
             int_blk.norm1.set_parameters(blk.norm1.weight.data, blk.norm1.bias.data, scale_default, scale_default)
-            int_blk.qkv.set_quantized_parameters(blk.attn.qkv.weight.data, blk.attn.qkv.bias.data, scale_default, scale_default)
-            int_blk.proj.set_quantized_parameters(blk.attn.proj.weight.data, blk.attn.proj.bias.data, scale_default, scale_default)
+            int_blk.qkv.set_quantized_parameters(blk.attn.qkv.weight.data, blk.attn.qkv.bias.data, qkv_sx, scale_default)
+            int_blk.proj.set_quantized_parameters(blk.attn.proj.weight.data, blk.attn.proj.bias.data, proj_sx, scale_default)
             int_blk.norm2.set_parameters(blk.norm2.weight.data, blk.norm2.bias.data, scale_default, scale_default)
-            int_blk.fc1.set_quantized_parameters(blk.mlp.fc1.weight.data, blk.mlp.fc1.bias.data, scale_default, scale_default)
-            int_blk.fc2.set_quantized_parameters(blk.mlp.fc2.weight.data, blk.mlp.fc2.bias.data, scale_default, scale_default)
+            int_blk.fc1.set_quantized_parameters(blk.mlp.fc1.weight.data, blk.mlp.fc1.bias.data, fc1_sx, scale_default)
+            int_blk.fc2.set_quantized_parameters(blk.mlp.fc2.weight.data, blk.mlp.fc2.bias.data, fc2_sx, scale_default)
             self.encoder_blocks.append(int_blk)
 
         self.encoder_norm = IntegerLayerNorm(self.embed_dim, scale_default, scale_default)
@@ -388,9 +401,13 @@ class IntegerPARSeq(nn.Module):
         memory = self.encode(images)
 
         # 2. Decode autorregressively or in non-AR mode
+        bos_id = getattr(tokenizer, "bos_id", 0) if tokenizer is not None else 0
+        pad_id = getattr(tokenizer, "pad_id", 0) if tokenizer is not None else 0
+        eos_id = getattr(tokenizer, "eos_id", 0) if tokenizer is not None else 0
+
         if self.decode_ar:
-            # Start with BOS token (index 0)
-            tgt_in = torch.zeros((bs, num_steps), dtype=torch.long, device=images.device)
+            tgt_in = torch.full((bs, num_steps), pad_id, dtype=torch.long, device=images.device)
+            tgt_in[:, 0] = bos_id
             logits_list = []
             for i in range(num_steps):
                 j = i + 1
@@ -400,10 +417,12 @@ class IntegerPARSeq(nn.Module):
                 if j < num_steps:
                     pred_token = step_logits.squeeze(1).argmax(dim=-1)
                     tgt_in[:, j] = pred_token
+                    if tokenizer is not None and (tgt_in == eos_id).any(dim=-1).all():
+                        break
 
             logits = torch.cat(logits_list, dim=1)
         else:
-            tgt_in = torch.zeros((bs, num_steps), dtype=torch.long, device=images.device)
+            tgt_in = torch.full((bs, num_steps), bos_id, dtype=torch.long, device=images.device)
             tgt_out = self.decode(tgt_in, memory)
             logits = self.head(tgt_out)
         return logits.float()
@@ -461,6 +480,21 @@ class PARSeqQuantizer:
         ptq_model.to(device)
         print(f"[*] Calibrating on {num_batches} batches on device={device}...")
 
+        max_acts = {}
+        hooks = []
+
+        def make_hook(name):
+            def hook_fn(mod, inp, out):
+                x = inp[0] if isinstance(inp, tuple) else inp
+                cur_max = x.detach().abs().amax().item()
+                if name not in max_acts or cur_max > max_acts[name]:
+                    max_acts[name] = cur_max
+            return hook_fn
+
+        for name, module in ptq_model.named_modules():
+            if isinstance(module, (nn.Linear, nn.Conv2d)):
+                hooks.append(module.register_forward_hook(make_hook(name)))
+
         batch_count = 0
         with torch.no_grad():
             for batch in dataloader:
@@ -469,6 +503,23 @@ class PARSeqQuantizer:
                 images = batch[0].to(device) if isinstance(batch, (tuple, list)) else batch.to(device)
                 _ = ptq_model.encode(images)
                 batch_count += 1
+
+        for h in hooks:
+            h.remove()
+
+        for name, m_val in max_acts.items():
+            self.scale_dict[name + ".scale_x"] = torch.tensor(max(m_val / 127.0, 1e-5), dtype=torch.float32)
+
+        # Record per-channel weight scales
+        for name, module in ptq_model.named_modules():
+            if isinstance(module, nn.Linear):
+                max_w = module.weight.detach().abs().amax(dim=1)
+                self.scale_dict[name + ".scale_w"] = torch.clamp(max_w / 127.0, min=1e-8).cpu()
+            elif isinstance(module, nn.Conv2d):
+                max_w = module.weight.detach().abs().amax(dim=(1, 2, 3))
+                self.scale_dict[name + ".scale_w"] = torch.clamp(max_w / 127.0, min=1e-8).cpu()
+
+        print(f"[+] Calibrated activation and weight scales for {len(max_acts)} layers.")
 
         # Run Unified Metric search for sample activations
         in_feat = ptq_model.head.in_features if hasattr(ptq_model, "head") else 384

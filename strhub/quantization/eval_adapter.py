@@ -107,9 +107,15 @@ def load_model_for_testing(
             try:
                 return load_from_checkpoint(base_checkpoint, **kwargs)
             except Exception:
-                sys_m = create_model("parseq", pretrained=False, **kwargs)
-                ckpt = torch.load(base_checkpoint, map_location="cpu")
-                state = ckpt.get("state_dict", ckpt)
+                b_ckpt = torch.load(base_checkpoint, map_location="cpu")
+                if isinstance(b_ckpt, dict) and "hyper_parameters" in b_ckpt:
+                    from strhub.models.parseq.system import PARSeq as PARSeqSystem
+                    hp = dict(b_ckpt["hyper_parameters"])
+                    hp.update(kwargs)
+                    sys_m = PARSeqSystem(**hp)
+                else:
+                    sys_m = create_model("parseq", pretrained=False, **kwargs)
+                state = b_ckpt.get("state_dict", b_ckpt)
                 clean_state = {k.replace("model.", ""): v for k, v in state.items()}
                 sys_m.model.load_state_dict(clean_state, strict=False)
                 return sys_m
@@ -136,25 +142,52 @@ def load_model_for_testing(
         ckpt = torch.load(checkpoint_path, map_location="cpu")
         is_dict = isinstance(ckpt, dict)
 
-        # Check if checkpoint is from calibrate_int8.py (has assignments or scale_dict)
-        if is_dict and ("assignments" in ckpt or "scale_dict" in ckpt or quant_mode == "integer_only"):
-            print(f"[*] Loading 100% Integer-Only model from calibrated checkpoint: {checkpoint_path}")
-            system = create_model("parseq", pretrained=False, **kwargs)
+        def _get_configured_system():
+            if base_checkpoint and os.path.isfile(base_checkpoint):
+                return _load_base()
+            if is_dict and "hyper_parameters" in ckpt:
+                from strhub.models.parseq.system import PARSeq as PARSeqSystem
+                hp = dict(ckpt["hyper_parameters"])
+                hp.update(kwargs)
+                return PARSeqSystem(**hp)
+            return create_model("parseq", pretrained=False, **kwargs)
+
+        # Explicit Integer-Only requested
+        if quant_mode == "integer_only":
+            print(f"[*] Loading 100% Integer-Only model from checkpoint: {checkpoint_path}")
+            system = _get_configured_system()
             int_model = IntegerPARSeq(system.model, scale_dict=ckpt.get("scale_dict", {}))
-            int_model.load_state_dict(ckpt["state_dict"])
+            if "integer_state_dict" in ckpt:
+                int_model.load_state_dict(ckpt["integer_state_dict"])
+            elif "state_dict" in ckpt:
+                int_model.load_state_dict(ckpt["state_dict"], strict=False)
             system.model = int_model
+            return system
+
+        # Check if checkpoint is from calibrate_int8.py (has scale_dict or assignments)
+        if is_dict and ("scale_dict" in ckpt or "assignments" in ckpt):
+            print(f"[*] Loading calibrated INT8 model (QDQ ViT Encoder) from: {checkpoint_path}")
+            system = _get_configured_system()
+            state = ckpt.get("state_dict", ckpt)
+            clean_state = {k.replace("model.", ""): v for k, v in state.items()}
+            system.model.load_state_dict(clean_state, strict=False)
+
+            from .trt_exporter import QDQViTEncoder
+            system.model.encoder = QDQViTEncoder(
+                system.model.encoder,
+                state_dict=clean_state,
+                scale_dict=ckpt.get("scale_dict", {}),
+            )
             return system
 
         # Check if checkpoint is from train_qat.py
         if is_dict and "state_dict" in ckpt:
             state = ckpt["state_dict"]
-            # Check if state has QuantNoise layers
             has_qn = any("scale_w" in k or "scale_x" in k for k in state.keys())
             if has_qn or quant_mode == "qat":
-                print(f"[*] Loading QAT Quant-Noise model from checkpoint: {checkpoint_path}")
-                system = create_model("parseq", pretrained=False, **kwargs)
+                print(f"[*] Loading QAT model from checkpoint: {checkpoint_path}")
+                system = _get_configured_system()
                 system.model = quantize_parseq(system.model, mode="qat")
-                # Clean prefix
                 clean_state = {k.replace("model.", ""): v for k, v in state.items()}
                 system.model.load_state_dict(clean_state, strict=False)
                 return system
@@ -163,11 +196,11 @@ def load_model_for_testing(
         try:
             system = load_from_checkpoint(checkpoint_path, **kwargs)
         except Exception:
-            # Fallback if checkpoint was saved as raw state_dict
-            system = create_model("parseq", pretrained=False, **kwargs)
+            system = _get_configured_system()
             state = ckpt.get("state_dict", ckpt)
             clean_state = {k.replace("model.", ""): v for k, v in state.items()}
             system.model.load_state_dict(clean_state, strict=False)
+        return system
 
     else:
         # Standard checkpoint or 'pretrained=<model_id>'

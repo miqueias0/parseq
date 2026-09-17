@@ -92,12 +92,14 @@ def main():
 
     # Save calibrated model
     save_dict = {
-        "state_dict": integer_model.state_dict(),
+        "state_dict": model.state_dict(),
+        "integer_state_dict": integer_model.state_dict(),
         "assignments": quantizer.searcher.assignments,
         "scale_dict": quantizer.scale_dict,
+        "hyper_parameters": dict(system.hparams) if hasattr(system, "hparams") else {},
     }
     torch.save(save_dict, args.output)
-    print(f"[+] Successfully saved calibrated INT8 integer-only model to: {args.output}")
+    print(f"[+] Successfully saved calibrated INT8 checkpoint to: {args.output}")
     print("=" * 65)
 
 
