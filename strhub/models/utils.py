@@ -83,13 +83,50 @@ def create_model(experiment: str, pretrained: bool = False, **kwargs):
     return model
 
 
+import os
+
+
 def load_from_checkpoint(checkpoint_path: str, **kwargs):
     if checkpoint_path.startswith('pretrained='):
         model_id = checkpoint_path.split('=', maxsplit=1)[1]
         model = create_model(model_id, True, **kwargs)
-    else:
-        ModelClass = _get_model_class(checkpoint_path)
-        model = ModelClass.load_from_checkpoint(checkpoint_path, **kwargs)
+        return model
+
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+
+    ModelClass = _get_model_class(checkpoint_path)
+
+    # Check if checkpoint is a custom dictionary (e.g. QAT checkpoint saved by torch.save)
+    if os.path.exists(checkpoint_path):
+        try:
+            raw = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        except Exception:
+            raw = None
+
+        if isinstance(raw, dict) and 'pytorch-lightning_version' not in raw:
+            base_candidates = [
+                'pretrained/parseq_alpr_98.5.ckpt',
+                os.path.join(os.path.dirname(checkpoint_path), 'parseq_alpr_98.5.ckpt'),
+            ]
+            base_path = next((p for p in base_candidates if os.path.exists(p) and p != checkpoint_path), None)
+            if base_path:
+                model = ModelClass.load_from_checkpoint(base_path, **kwargs)
+            else:
+                model = create_model('parseq', pretrained=False)
+
+            sd = raw.get('model_state_dict', raw.get('state_dict', raw))
+            is_qat = any('q_weight' in k or 'weight_scale' in k for k in sd.keys()) or 'qat' in checkpoint_path.lower()
+            if is_qat:
+                from strhub.models.parseq.quantized_parseq import create_model_variant
+                model.model = create_model_variant('m6', model.model)
+
+            clean_sd = {k.replace('model.', ''): v for k, v in sd.items()}
+            target = model.model if hasattr(model, 'model') else model
+            target.load_state_dict(clean_sd, strict=False)
+            return model
+
+    model = ModelClass.load_from_checkpoint(checkpoint_path, **kwargs)
     return model
 
 

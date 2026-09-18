@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from timm.models.helpers import named_apply
+from timm.models import named_apply
 
 from strhub.data.utils import Tokenizer
 from strhub.models.utils import init_weights
