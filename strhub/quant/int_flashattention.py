@@ -59,10 +59,11 @@ def int8_matmul_int32(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     # CUDA Tensor Core dimension alignment
     pad_m = (32 - M) if (a.is_cuda and M <= 16) else 0
     pad_n = (8 - (N % 8)) if (a.is_cuda and N % 8 != 0) else 0
+    pad_k = (8 - (K % 8)) if (a.is_cuda and K % 8 != 0) else 0
 
-    if pad_m > 0 or pad_n > 0:
-        a_padded = F.pad(a_exp, (0, 0, 0, pad_m))
-        b_padded = F.pad(b_exp, (0, pad_n, 0, 0))
+    if pad_m > 0 or pad_n > 0 or pad_k > 0:
+        a_padded = F.pad(a_exp, (0, pad_k, 0, pad_m))
+        b_padded = F.pad(b_exp, (0, pad_n, 0, pad_k))
         out_padded = torch.empty((batch_size, M + pad_m, N + pad_n), dtype=torch.int32, device=a.device)
         for i in range(batch_size):
             out_padded[i] = torch._int_mm(a_padded[i], b_padded[i])
@@ -294,6 +295,7 @@ class INTFlashAttention(nn.Module):
         block_c: int = 64,
         bits: int = 8,
         v_quant_mode: str = "per_tensor",
+        use_plugin: bool = False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -304,6 +306,7 @@ class INTFlashAttention(nn.Module):
         self.block_c = block_c
         self.bits = bits
         self.v_quant_mode = v_quant_mode
+        self.use_plugin = use_plugin
 
     def forward(
         self,
@@ -316,6 +319,10 @@ class INTFlashAttention(nn.Module):
         """Executes INT-FlashAttention Algorithm 1.
         q, k, v are tensors of shape (B, num_heads, N, head_dim).
         """
+        if self.use_plugin:
+            from strhub.quant.plugins.trt_plugins import INTFlashAttentionPluginOp
+            return INTFlashAttentionPluginOp.apply(q, k, v, self.scale)
+
         return int_flashattention_forward(
             q=q,
             k=k,

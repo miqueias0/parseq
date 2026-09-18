@@ -12,6 +12,11 @@ from strhub.quant.integer_gelu import IBERTGELU, IViTGELU, IPTQDataAwarePolyGELU
 from strhub.quant.integer_softmax import IBERTSoftmax, IViTShiftmax, IPTQBitSoftmax, SoftmaxFP32
 from strhub.quant.integer_layernorm import IBERTLayerNorm, IPTQLayerNorm, LayerNormFP32
 from strhub.quant.int_flashattention import INTFlashAttention
+from strhub.quant.plugins.trt_plugins import (
+    IntegerLayerNormPluginWrapper,
+    IntegerGELUPluginWrapper,
+    IntegerSoftmaxPluginWrapper,
+)
 
 
 class ONNXQDQ(torch.autograd.Function):
@@ -177,6 +182,7 @@ class AttentionSoftmaxWrapper(nn.Module):
         block_c: int = 64,
         bits: int = 8,
         v_quant_mode: str = "per_tensor",
+        use_plugin: bool = False,
     ):
         super().__init__()
         if isinstance(original_attn, AttentionSoftmaxWrapper):
@@ -187,6 +193,7 @@ class AttentionSoftmaxWrapper(nn.Module):
         self.fuse_mha = fuse_mha
         self.use_int_flashattention = use_int_flashattention
         self.v_quant_mode = v_quant_mode
+        self.use_plugin = use_plugin
 
         # Disable fused_attn so explicit execution takes place
         if hasattr(self.attn, "fused_attn"):
@@ -201,6 +208,7 @@ class AttentionSoftmaxWrapper(nn.Module):
                 block_c=block_c,
                 bits=bits,
                 v_quant_mode=v_quant_mode,
+                use_plugin=use_plugin,
             )
         else:
             self.int_flash_attn = None
@@ -288,6 +296,7 @@ def replace_nonlinear_modules(
     fuse_layernorm: bool = False,
     use_int_flashattention: bool = False,
     v_quant_mode: str = "per_tensor",
+    use_plugin: bool = False,
 ) -> nn.Module:
     """Replace activation functions and LayerNorms with chosen integer-only approximations,
     or with canonical fused primitives when flags fuse_mha, fuse_mlp, fuse_layernorm, or
@@ -297,18 +306,28 @@ def replace_nonlinear_modules(
         "gelu_ibert": IBERTGELU,
         "gelu_ivit": IViTGELU,
         "gelu_iptq": IPTQDataAwarePolyGELU,
+        "gelu_plugin": IntegerGELUPluginWrapper,
     }
     softmax_map = {
         "softmax_fp32": SoftmaxFP32,
         "softmax_ibert": IBERTSoftmax,
         "softmax_ivit": IViTShiftmax,
         "softmax_iptq": IPTQBitSoftmax,
+        "softmax_plugin": IntegerSoftmaxPluginWrapper,
     }
     layernorm_map = {
         "layernorm_fp32": LayerNormFP32,
         "layernorm_ibert": IBERTLayerNorm,
         "layernorm_iptq": IPTQLayerNorm,
+        "layernorm_plugin": IntegerLayerNormPluginWrapper,
     }
+
+    if use_plugin and not use_int_flashattention:
+        softmax_name = "softmax_plugin"
+    if use_plugin and not fuse_mlp:
+        gelu_name = "gelu_plugin"
+    if use_plugin and not fuse_layernorm:
+        layernorm_name = "layernorm_plugin"
 
     if fuse_mlp:
         gelu_name = "gelu_fp32"
@@ -382,6 +401,7 @@ def replace_nonlinear_modules(
                         fuse_mha=fuse_mha,
                         use_int_flashattention=use_int_flashattention,
                         v_quant_mode=v_quant_mode,
+                        use_plugin=use_plugin,
                     )
 
         # Encoder final norm
@@ -439,6 +459,7 @@ def create_model_variant(
     fuse_layernorm: bool = False,
     use_int_flashattention: bool = False,
     v_quant_mode: str = "per_tensor",
+    use_plugin: bool = False,
 ) -> nn.Module:
     """Build a specific model variant from the evaluation matrix:
     - M0: PARSeq FP32 AR (Autoregressive decoding, refine_iters=1)
@@ -495,6 +516,7 @@ def create_model_variant(
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=use_int_flashattention,
             v_quant_mode=v_quant_mode,
+            use_plugin=use_plugin,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)
@@ -515,6 +537,7 @@ def create_model_variant(
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=use_int_flashattention,
             v_quant_mode=v_quant_mode,
+            use_plugin=use_plugin,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)

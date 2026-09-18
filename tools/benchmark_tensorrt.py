@@ -15,6 +15,8 @@ if hasattr(sys.stderr, "reconfigure"):
 import numpy as np
 import torch
 import tensorrt as trt
+from strhub.quant.plugins.trt_plugins import register_parseq_plugins
+register_parseq_plugins()
 
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)

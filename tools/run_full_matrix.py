@@ -182,6 +182,55 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m6_int_fa_fuse_all.onnx",
         "engine_path": "trt/parseq_m6_int_fa_fuse_all.engine",
     },
+    # 7. Custom Plugin Fused Variants (IPluginV2DynamicExt / CUDA DP4A)
+    {
+        "id": "m5_int_fa_plugin_fused",
+        "label": "M5: Integer-Only PTQ + INT-Flash Plugin (Fused)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m5_int_fa_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m5_int_fa_plugin_fused.engine",
+    },
+    {
+        "id": "m6_int_fa_plugin_fused",
+        "label": "M6: Integer-Only QAT + INT-Flash Plugin (Fused)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m6_int_fa_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m6_int_fa_plugin_fused.engine",
+    },
+    {
+        "id": "m5_plugin_all",
+        "label": "M5: Integer-Only PTQ + All Custom Plugins (FA+LN+GELU)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m5_plugin_all.onnx",
+        "engine_path": "trt/parseq_m5_plugin_all.engine",
+    },
+    {
+        "id": "m6_plugin_all",
+        "label": "M6: Integer-Only QAT + All Custom Plugins (FA+LN+GELU)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m6_plugin_all.onnx",
+        "engine_path": "trt/parseq_m6_plugin_all.engine",
+    },
 ]
 
 
@@ -256,6 +305,7 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False) -> Dict[s
                     fuse_mlp=fuse_mlp,
                     fuse_layernorm=fuse_layernorm,
                     use_int_flashattention=cfg["use_int_fa"],
+                    use_plugin=cfg.get("use_plugin", False),
                 )
             record["onnx_size_mb"] = round(os.path.getsize(cfg["onnx_path"]) / (1024 * 1024), 2)
             print(f"   ✓ ONNX ready ({record['onnx_size_mb']} MB)")

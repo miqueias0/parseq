@@ -14,6 +14,8 @@ from typing import Dict, Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import tensorrt as trt
+from strhub.quant.plugins.trt_plugins import register_parseq_plugins
+register_parseq_plugins()
 
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)

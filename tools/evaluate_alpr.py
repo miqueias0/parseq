@@ -57,6 +57,8 @@ class TensorRTModelWrapper(torch.nn.Module):
     def __init__(self, engine_path: str, device: str = "cuda"):
         super().__init__()
         import tensorrt as trt
+        from strhub.quant.plugins.trt_plugins import register_parseq_plugins
+        register_parseq_plugins()
         self.device = torch.device("cuda")
         TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
         runtime = trt.Runtime(TRT_LOGGER)
