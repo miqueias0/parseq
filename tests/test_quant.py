@@ -163,3 +163,39 @@ def test_dynamic_batching():
         x = torch.randn(bs, 3, 32, 128)
         out = wrapper(x)
         assert out.shape == (bs, 8, 36)
+
+
+def test_fusion_flags():
+    """Verify modular kernel fusion flags (fuse_mha, fuse_mlp, fuse_layernorm)."""
+    model = PARSeq(
+        num_tokens=38,
+        max_label_length=7,
+        img_size=[32, 128],
+        patch_size=[4, 8],
+        embed_dim=384,
+        enc_num_heads=6,
+        enc_mlp_ratio=4,
+        enc_depth=2,
+        dec_num_heads=6,
+        dec_mlp_ratio=4,
+        dec_depth=1,
+        decode_ar=False,
+        refine_iters=0,
+        dropout=0.0,
+    )
+
+    # Test baseline M5 without fusion
+    m5_baseline = create_model_variant("m5", model, fuse_mha=False, fuse_mlp=False, fuse_layernorm=False)
+    assert m5_baseline.encoder.blocks[0].attn.fuse_mha is False
+
+    # Test M5 with modular fusion flags
+    m5_fused = create_model_variant("m5", model, fuse_mha=True, fuse_mlp=True, fuse_layernorm=True)
+    assert m5_fused.encoder.blocks[0].attn.fuse_mha is True
+    assert isinstance(m5_fused.encoder.blocks[0].mlp.act, GELUFP32)
+    assert isinstance(m5_fused.encoder.blocks[0].norm1, LayerNormFP32)
+
+    # Forward pass on fused variant
+    x = torch.randn(2, 3, 32, 128)
+    encoded = m5_fused.encode(x)
+    assert encoded.shape[0] == 2
+

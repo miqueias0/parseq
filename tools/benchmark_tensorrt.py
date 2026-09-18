@@ -46,9 +46,14 @@ def benchmark_tensorrt(
     # Inspect engine info
     inspector = engine.create_engine_inspector()
     info_json = inspector.get_engine_information(trt.LayerInformationFormat.JSON)
+    layer_types = {}
     try:
         engine_info = json.loads(info_json)
-        total_layers = len(engine_info.get("Layers", []))
+        layers = engine_info.get("Layers", [])
+        total_layers = len(layers)
+        for l in layers:
+            t = l.get("LayerType", l.get("type", "Unknown"))
+            layer_types[t] = layer_types.get(t, 0) + 1
     except Exception:
         total_layers = -1
 
@@ -101,6 +106,7 @@ def benchmark_tensorrt(
         "engine_path": engine_path,
         "batch_size": batch_size,
         "total_layers": total_layers,
+        "layer_types": layer_types,
         "mean_ms": mean_ms,
         "median_ms": median_ms,
         "std_ms": std_ms,
@@ -134,7 +140,7 @@ if __name__ == "__main__":
     print(f"=== TensorRT Benchmark ({os.path.basename(args.engine)} | Batch={res['batch_size']}) ===")
     print(f"Latency: mean={res['mean_ms']:.2f}ms | median={res['median_ms']:.2f}ms | p95={res['p95_ms']:.2f}ms | p99={res['p99_ms']:.2f}ms")
     print(f"Throughput: {res['fps']:.1f} FPS (median-based: {res['fps_median']:.1f} FPS)")
-    print(f"Compiled Layers: {res.get('total_layers', 'N/A')}")
+    print(f"Compiled Layers: {res.get('total_layers', 'N/A')} {res.get('layer_types', {})}")
 
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)

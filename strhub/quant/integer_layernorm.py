@@ -19,14 +19,10 @@ def integer_sqrt_newton(n: torch.Tensor, max_iters: int = 4) -> torch.Tensor:
     return xi
 
 
-class LayerNormFP32(nn.Module):
-    """Standard FP32 LayerNorm."""
+class LayerNormFP32(nn.LayerNorm):
+    """Standard FP32 LayerNorm directly subclassing nn.LayerNorm."""
     def __init__(self, normalized_shape: Union[int, Sequence[int]], eps: float = 1e-5):
-        super().__init__()
-        self.ln = nn.LayerNorm(normalized_shape, eps=eps)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.ln(x)
+        super().__init__(normalized_shape, eps=eps)
 
 
 class IBERTLayerNorm(nn.Module):

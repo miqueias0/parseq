@@ -92,7 +92,11 @@ def export_onnx(
     batch_size: int = 1,
     img_size: tuple = (32, 128),
     opset_version: int = 18,
-    dynamic_batch: bool = True
+    dynamic_batch: bool = True,
+    fuse_shapes: bool = False,
+    fuse_mha: bool = False,
+    fuse_mlp: bool = False,
+    fuse_layernorm: bool = False,
 ) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     device = torch.device("cpu") # Export from CPU for broad ONNX converter compatibility
@@ -106,13 +110,17 @@ def export_onnx(
 
     calib_file = "results/calibration/calibration_stats.json"
     is_already_quant = any(isinstance(m, QuantizedLinear) for m in system.modules())
-    if is_already_quant and variant == "m6":
+    has_custom_fusion = (fuse_mha or fuse_mlp or fuse_layernorm)
+    if is_already_quant and variant == "m6" and not has_custom_fusion:
         model = copy.deepcopy(system.model).eval().to(device)
     else:
         model = create_model_variant(
             variant,
             system.model,
-            calibration_file=calib_file if os.path.exists(calib_file) else None
+            calibration_file=calib_file if os.path.exists(calib_file) else None,
+            fuse_mha=fuse_mha,
+            fuse_mlp=fuse_mlp,
+            fuse_layernorm=fuse_layernorm,
         ).eval().to(device)
 
     # Load fine-tuned weights for M6
@@ -171,6 +179,22 @@ def export_onnx(
     onnx_model = onnx.load(output_path)
     onnx.checker.check_model(onnx_model)
 
+    if fuse_shapes:
+        try:
+            import onnxsim
+            print(f"Simplifying ONNX graph with onnxsim (--fuse_shapes active)...")
+            simplified_model, check = onnxsim.simplify(
+                output_path,
+                test_input_shapes={"images": [1, 3, img_size[0], img_size[1]]}
+            )
+            if check:
+                onnx.save(simplified_model, output_path)
+                print(f"Successfully simplified graph with onnxsim.")
+            else:
+                print("Warning: onnxsim check failed, keeping original model.")
+        except Exception as e:
+            print(f"Warning: could not run onnxsim simplify: {e}")
+
     # If M2, convert to true FP16 format
     if variant == "m2":
         try:
@@ -193,7 +217,14 @@ def export_onnx(
     return output_path
 
 
-def export_all_variants(checkpoint_path: str = "pretrained/parseq_alpr_98.5.ckpt", opset: int = 18):
+def export_all_variants(
+    checkpoint_path: str = "pretrained/parseq_alpr_98.5.ckpt",
+    opset: int = 18,
+    fuse_shapes: bool = False,
+    fuse_mha: bool = False,
+    fuse_mlp: bool = False,
+    fuse_layernorm: bool = False,
+):
     """Exports all variants m0 through m6 to onnx/ directory."""
     variants = [
         ("m0", "onnx/parseq_m0_ar_fp32.onnx"),
@@ -221,7 +252,16 @@ def export_all_variants(checkpoint_path: str = "pretrained/parseq_alpr_98.5.ckpt
                 elif os.path.exists("pretrained/parseq_alpr_qat_m6.ckpt"):
                     ckpt_to_use = "pretrained/parseq_alpr_qat_m6.ckpt"
 
-            p = export_onnx(checkpoint_path=ckpt_to_use, variant=var, output_path=out_path, opset_version=opset)
+            p = export_onnx(
+                checkpoint_path=ckpt_to_use,
+                variant=var,
+                output_path=out_path,
+                opset_version=opset,
+                fuse_shapes=fuse_shapes,
+                fuse_mha=fuse_mha,
+                fuse_mlp=fuse_mlp,
+                fuse_layernorm=fuse_layernorm,
+            )
             results[var] = p
         except Exception as e:
             print(f"Error exporting {var}: {e}")
@@ -239,14 +279,36 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="onnx/parseq_nar.onnx")
     parser.add_argument("--opset", type=int, default=18)
     parser.add_argument("--all", action="store_true", help="Export all variants m0..m6")
+    parser.add_argument("--fuse_shapes", action="store_true", help="Fuse redundant shape, reshape, cast and gather nodes via ONNX Simplifier")
+    parser.add_argument("--fuse_mha", action="store_true", help="Emit canonical Softmax pattern allowing TensorRT FlashAttention/FMHA kernel fusion")
+    parser.add_argument("--fuse_mlp", action="store_true", help="Emit canonical GELU allowing TensorRT FC1+GELU+FC2 GEMM kernel fusion")
+    parser.add_argument("--fuse_layernorm", action="store_true", help="Emit canonical LayerNorm allowing TensorRT Myelin LayerNorm kernel fusion")
+    parser.add_argument("--fusion_level", type=str, default="none", choices=["none", "shapes", "mha", "mlp", "all"],
+                        help="Preset level of kernel fusion: none, shapes, mha (shapes+mha), mlp (shapes+mha+mlp), or all (full fusion)")
     args = parser.parse_args()
 
+    fuse_shapes = args.fuse_shapes or (args.fusion_level in ["shapes", "mha", "mlp", "all"])
+    fuse_mha = args.fuse_mha or (args.fusion_level in ["mha", "mlp", "all"])
+    fuse_mlp = args.fuse_mlp or (args.fusion_level in ["mlp", "all"])
+    fuse_layernorm = args.fuse_layernorm or (args.fusion_level in ["all"])
+
     if args.all:
-        export_all_variants(checkpoint_path=args.checkpoint, opset=args.opset)
+        export_all_variants(
+            checkpoint_path=args.checkpoint,
+            opset=args.opset,
+            fuse_shapes=fuse_shapes,
+            fuse_mha=fuse_mha,
+            fuse_mlp=fuse_mlp,
+            fuse_layernorm=fuse_layernorm,
+        )
     else:
         export_onnx(
             checkpoint_path=args.checkpoint,
             variant=args.variant,
             output_path=args.output,
-            opset_version=args.opset
+            opset_version=args.opset,
+            fuse_shapes=fuse_shapes,
+            fuse_mha=fuse_mha,
+            fuse_mlp=fuse_mlp,
+            fuse_layernorm=fuse_layernorm,
         )

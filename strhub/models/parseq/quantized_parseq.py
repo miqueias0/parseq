@@ -161,14 +161,15 @@ class QuantizedLinear(nn.Module):
 
 
 class AttentionSoftmaxWrapper(nn.Module):
-    """Wraps timm Attention to use candidate integer-only softmax."""
-    def __init__(self, original_attn, softmax_module: nn.Module):
+    """Wraps timm Attention to use candidate integer-only softmax or fused MHA pattern."""
+    def __init__(self, original_attn, softmax_module: nn.Module, fuse_mha: bool = False):
         super().__init__()
         if isinstance(original_attn, AttentionSoftmaxWrapper):
             self.attn = original_attn.attn
         else:
             self.attn = original_attn
         self.softmax = softmax_module
+        self.fuse_mha = fuse_mha
         # Disable fused_attn so explicit softmax is executed
         if hasattr(self.attn, "fused_attn"):
             self.attn.fused_attn = False
@@ -192,8 +193,13 @@ class AttentionSoftmaxWrapper(nn.Module):
         if attn_mask is not None:
             attn = attn + attn_mask
 
-        # Execute chosen candidate Softmax
-        attn = self.softmax(attn)
+        if self.fuse_mha:
+            # Canonical Softmax pattern allowing TensorRT to fuse entire MHA block into FMHA kernel
+            attn = F.softmax(attn, dim=-1)
+        else:
+            # Execute chosen candidate integer Softmax (e.g. IPTQBitSoftmax polynomial unrolling)
+            attn = self.softmax(attn)
+
         attn = self.attn.attn_drop(attn)
         x = attn @ v
 
@@ -237,9 +243,13 @@ def replace_nonlinear_modules(
     gelu_name: str = "gelu_iptq",
     softmax_name: str = "softmax_iptq",
     layernorm_name: str = "layernorm_ibert",
-    assignment: Optional[Dict[str, str]] = None
+    assignment: Optional[Dict[str, str]] = None,
+    fuse_mha: bool = False,
+    fuse_mlp: bool = False,
+    fuse_layernorm: bool = False,
 ) -> nn.Module:
-    """Replace activation functions and LayerNorms with chosen integer-only approximations."""
+    """Replace activation functions and LayerNorms with chosen integer-only approximations,
+    or with canonical fused primitives when flags fuse_mha, fuse_mlp, fuse_layernorm are active."""
     gelu_map = {
         "gelu_fp32": GELUFP32,
         "gelu_ibert": IBERTGELU,
@@ -258,6 +268,11 @@ def replace_nonlinear_modules(
         "layernorm_iptq": IPTQLayerNorm,
     }
 
+    if fuse_mlp:
+        gelu_name = "gelu_fp32"
+    if fuse_layernorm:
+        layernorm_name = "layernorm_fp32"
+
     device = next(module.parameters()).device
 
     # 1. Replace in decoder layers
@@ -265,8 +280,8 @@ def replace_nonlinear_modules(
         for i, layer in enumerate(module.decoder.layers):
             layer_key_gelu = f"decoder.layer_{i}.gelu"
             layer_key_ln = f"decoder.layer_{i}.layernorm"
-            chosen_gelu = (assignment or {}).get(layer_key_gelu, gelu_name)
-            chosen_ln = (assignment or {}).get(layer_key_ln, layernorm_name)
+            chosen_gelu = "gelu_fp32" if fuse_mlp else (assignment or {}).get(layer_key_gelu, gelu_name)
+            chosen_ln = "layernorm_fp32" if fuse_layernorm else (assignment or {}).get(layer_key_ln, layernorm_name)
 
             if hasattr(layer, "activation"):
                 layer.activation = gelu_map.get(chosen_gelu, IPTQDataAwarePolyGELU)()
@@ -285,7 +300,8 @@ def replace_nonlinear_modules(
         if hasattr(module.decoder, "norm") and module.decoder.norm is not None:
             old_ln = module.decoder.norm
             ln_dim = old_ln.normalized_shape[0] if isinstance(old_ln.normalized_shape, (tuple, list)) else old_ln.normalized_shape
-            new_ln = layernorm_map.get(layernorm_name, IBERTLayerNorm)(ln_dim, eps=old_ln.eps).to(device)
+            chosen_ln = "layernorm_fp32" if fuse_layernorm else layernorm_name
+            new_ln = layernorm_map.get(chosen_ln, IBERTLayerNorm)(ln_dim, eps=old_ln.eps).to(device)
             new_ln.weight.data.copy_(old_ln.weight.data)
             new_ln.bias.data.copy_(old_ln.bias.data)
             module.decoder.norm = new_ln
@@ -297,11 +313,11 @@ def replace_nonlinear_modules(
                 block_key_gelu = f"encoder.block_{i}.gelu"
                 block_key_ln = f"encoder.block_{i}.layernorm"
                 block_key_sm = f"encoder.block_{i}.softmax"
-                chosen_gelu = (assignment or {}).get(block_key_gelu, gelu_name)
-                chosen_ln = (assignment or {}).get(block_key_ln, layernorm_name)
+                chosen_gelu = "gelu_fp32" if fuse_mlp else (assignment or {}).get(block_key_gelu, gelu_name)
+                chosen_ln = "layernorm_fp32" if fuse_layernorm else (assignment or {}).get(block_key_ln, layernorm_name)
                 chosen_sm = (assignment or {}).get(block_key_sm, softmax_name)
 
-                # MLP activation
+                # MLP activation (GELU)
                 if hasattr(block, "mlp") and hasattr(block.mlp, "act"):
                     block.mlp.act = gelu_map.get(chosen_gelu, IPTQDataAwarePolyGELU)()
 
@@ -318,13 +334,14 @@ def replace_nonlinear_modules(
                 # Attention Softmax
                 if hasattr(block, "attn"):
                     sm_mod = softmax_map.get(chosen_sm, IPTQBitSoftmax)(dim=-1)
-                    block.attn = AttentionSoftmaxWrapper(block.attn, sm_mod)
+                    block.attn = AttentionSoftmaxWrapper(block.attn, sm_mod, fuse_mha=fuse_mha)
 
         # Encoder final norm
         if hasattr(module.encoder, "norm") and module.encoder.norm is not None:
             old_ln = module.encoder.norm
             ln_dim = old_ln.normalized_shape[0] if isinstance(old_ln.normalized_shape, (tuple, list)) else old_ln.normalized_shape
-            new_ln = layernorm_map.get(layernorm_name, IBERTLayerNorm)(ln_dim, eps=old_ln.eps).to(device)
+            chosen_ln = "layernorm_fp32" if fuse_layernorm else layernorm_name
+            new_ln = layernorm_map.get(chosen_ln, IBERTLayerNorm)(ln_dim, eps=old_ln.eps).to(device)
             new_ln.weight.data.copy_(old_ln.weight.data)
             new_ln.bias.data.copy_(old_ln.bias.data)
             module.encoder.norm = new_ln
@@ -368,7 +385,10 @@ def create_model_variant(
     gelu_candidate: str = "gelu_iptq",
     softmax_candidate: str = "softmax_iptq",
     layernorm_candidate: str = "layernorm_ibert",
-    calibration_file: Optional[str] = None
+    calibration_file: Optional[str] = None,
+    fuse_mha: bool = False,
+    fuse_mlp: bool = False,
+    fuse_layernorm: bool = False,
 ) -> nn.Module:
     """Build a specific model variant from the evaluation matrix:
     - M0: PARSeq FP32 AR (Autoregressive decoding, refine_iters=1)
@@ -419,7 +439,10 @@ def create_model_variant(
             gelu_name=gelu_candidate,
             softmax_name=softmax_candidate,
             layernorm_name=layernorm_candidate,
-            assignment=assignment
+            assignment=assignment,
+            fuse_mha=fuse_mha,
+            fuse_mlp=fuse_mlp,
+            fuse_layernorm=fuse_layernorm,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)
@@ -434,7 +457,10 @@ def create_model_variant(
             gelu_name=gelu_candidate,
             softmax_name=softmax_candidate,
             layernorm_name=layernorm_candidate,
-            assignment=assignment
+            assignment=assignment,
+            fuse_mha=fuse_mha,
+            fuse_mlp=fuse_mlp,
+            fuse_layernorm=fuse_layernorm,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)
