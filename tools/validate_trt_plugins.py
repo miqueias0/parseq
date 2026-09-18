@@ -134,6 +134,26 @@ def run_numerical_parity_audit() -> Dict[str, Any]:
     results["integer_softmax"] = {"cossim": cos_sim_sm, "mae": mae_sm, "status": "PASSED" if cos_sim_sm > 0.999 else "FAILED"}
     print(f"Integer Softmax (I-BERT Exponent): Cosine Sim = {cos_sim_sm:.6f} | MAE = {mae_sm:.6f} | Status: [{results['integer_softmax']['status']}]")
 
+    # 5. SageAttention (arXiv:2410.02367v9)
+    from strhub.quant.sage_attention import sage_attention_forward
+    ref_sage = sage_attention_forward(q, k, v, scale=scale, mode="sageattn_b")
+    cuda_sage_out = torch.empty_like(q)
+    dll.run_sage_attention(
+        ctypes.c_void_p(cuda_sage_out.data_ptr()),
+        ctypes.c_void_p(q.data_ptr()),
+        ctypes.c_void_p(k.data_ptr()),
+        ctypes.c_void_p(v.data_ptr()),
+        ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
+        ctypes.c_float(scale),
+        ctypes.c_int(0),
+        ctypes.c_void_p(stream.cuda_stream)
+    )
+    torch.cuda.synchronize()
+    cos_sim_sage = F.cosine_similarity(ref_sage.flatten(), cuda_sage_out.flatten(), dim=0).item()
+    mae_sage = torch.mean(torch.abs(ref_sage - cuda_sage_out)).item()
+    results["sage_attention"] = {"cossim": cos_sim_sage, "mae": mae_sage, "status": "PASSED" if cos_sim_sage > 0.999 else "FAILED"}
+    print(f"SageAttention (arXiv:2410.02367):  Cosine Sim = {cos_sim_sage:.6f} | MAE = {mae_sage:.6f} | Status: [{results['sage_attention']['status']}]")
+
     return results
 
 

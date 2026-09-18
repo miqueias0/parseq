@@ -27,6 +27,7 @@ Este documento cataloga de forma exaustiva todos os scripts Python executáveis 
 | [`tools/collect_scientific_results.py`](file:///c:/Users/administrador/Desktop/i_parseq/tools/collect_scientific_results.py) | Orquestração | Script Direto | Consolidação de resultados em `metrics.json` e geração de relatórios. |
 | [`tools/generate_figures_tables.py`](file:///c:/Users/administrador/Desktop/i_parseq/tools/generate_figures_tables.py) | Relatórios | Script Direto | Geração de 15 figuras de alta resolução e 12 tabelas LaTeX acadêmicas. |
 | [`tools/validate_int_flashattention.py`](file:///c:/Users/administrador/Desktop/i_parseq/tools/validate_int_flashattention.py) | Validação | Script Direto | Validação matemática e numérica do INT-FlashAttention (arXiv:2409.16997v2). |
+| [`tools/validate_sage_attention.py`](file:///c:/Users/administrador/Desktop/i_parseq/tools/validate_sage_attention.py) | Validação | Script Direto | Validação matemática, de suavização de chaves e numérica do SageAttention (arXiv:2410.02367v9). |
 | [`tools/validate_trt_plugins.py`](file:///c:/Users/administrador/Desktop/i_parseq/tools/validate_trt_plugins.py) | Validação | Script Direto | Validação dos plugins customizados TensorRT (`IPluginV2DynamicExt`). |
 | [`tools/validate_onnx.py`](file:///c:/Users/administrador/Desktop/i_parseq/tools/validate_onnx.py) | Validação | `argparse` | Auditoria de concordância e fidelidade numérica entre PyTorch e ONNX. |
 | [`tools/validate_tensorrt.py`](file:///c:/Users/administrador/Desktop/i_parseq/tools/validate_tensorrt.py) | Validação | `argparse` | Validação de concordância numérica e semântica entre PyTorch e TensorRT. |
@@ -117,6 +118,8 @@ python test.py <checkpoint> [--dataset VeSV_pad] [--batch_size 64] [--variant m1
 | `--device` | `str` | Opcional | `'cuda'` | Dispositivo de computação (`'cuda'` ou `'cpu'`). |
 | `--variant` | `str` | Opcional | `None` | Variante de quantização/arquitetura: `m0` (FP32 AR), `m1` (FP32 NAR), `m2` (FP16 NAR), `m3` (INT8 Naive), `m4` (INT8 W8A8), `m5` (INT8 Integer-Only PTQ), `m6` (INT8 Integer-Only QAT). |
 | `--use_int_flashattention` | Flag booleana | Opcional | `False` | Ativa o algoritmo INT-FlashAttention (arXiv:2409.16997v2) com GEMMs INT8 e online softmax. |
+| `--use_sage_attention` | Flag booleana | Opcional | `False` | Ativa o algoritmo SageAttention (arXiv:2410.02367v9) com Key Smoothing e GEMMs INT8. |
+| `--sage_mode` | `str` | Opcional | `'sageattn_b'` | Modo de precisão do SageAttention: `sageattn_b` (matriz V em FP16/FP32) ou `sageattn_vb` (matriz V quantizada em INT8). |
 | `--max_samples` | `int` | Opcional | `None` | Limite máximo de amostras avaliadas (útil para auditoria rápida). |
 | `--cased` | Flag booleana | Opcional | `False` | Diferenciação entre letras maiúsculas e minúsculas na avaliação. |
 | `--punctuation` | Flag booleana | Opcional | `False` | Considera pontuação no charset de teste. |
@@ -213,6 +216,8 @@ python tools/export_onnx.py --variant m1 --output onnx/parseq_nar.onnx [--fusion
 | `--fuse_mlp` | Flag booleana | Opcional | `False` | Emite GELU canônico para permitir fusão de GEMM FC1 + GELU + FC2. |
 | `--fuse_layernorm` | Flag booleana | Opcional | `False` | Emite LayerNorm canônico para fusão no kernel Myelin LayerNorm do TensorRT. |
 | `--use_int_flashattention` | Flag booleana | Opcional | `False` | Ativa a atenção em blocos inteiros com INT-FlashAttention (arXiv:2409.16997v2). |
+| `--use_sage_attention` | Flag booleana | Opcional | `False` | Ativa a atenção com SageAttention (arXiv:2410.02367v9) com Key Smoothing e quantização INT8. |
+| `--sage_mode` | `str` | Opcional | `'sageattn_b'` | Modo do SageAttention: `sageattn_b` ou `sageattn_vb`. |
 | `--use_plugin` | Flag booleana | Opcional | `False` | Emite nós compatíveis com plugins customizados de C++/CUDA (`IPluginV2DynamicExt`). |
 | `--fusion_level` | `str` | Opcional | `'none'` | Nível pré-configurado de fusão: `none`, `shapes`, `mha`, `mlp` ou `all`. |
 
@@ -296,6 +301,8 @@ python tools/evaluate_alpr.py --checkpoint trt/parseq_m1_nar_fp16.engine [--data
 | `--max_samples` | `int` | Opcional | `None` | Número máximo de amostras avaliadas (avaliação completa se `None`). |
 | `--device` | `str` | Opcional | `'cuda'` | Dispositivo (`'cuda'` ou `'cpu'`). |
 | `--use_int_flashattention` | Flag booleana | Opcional | `False` | Habilita módulo INT-FlashAttention durante a avaliação do checkpoint. |
+| `--use_sage_attention` | Flag booleana | Opcional | `False` | Habilita módulo SageAttention durante a avaliação do checkpoint PyTorch. |
+| `--sage_mode` | `str` | Opcional | `'sageattn_b'` | Modo do SageAttention (`sageattn_b` ou `sageattn_vb`). |
 | `--output` | `str` | Opcional | `None` | Caminho de arquivo JSON para gravação estruturada das métricas. |
 
 ---
@@ -401,7 +408,22 @@ python tools/validate_trt_plugins.py
 
 ---
 
-### 4.3 `tools/validate_onnx.py`
+### 4.3 `tools/validate_sage_attention.py`
+Executa a suíte de auditoria científica e matemática do algoritmo SageAttention (arXiv:2410.02367v9). Conduz 5 auditorias rigorosas:
+1. **Invariância Matemática do Key Smoothing sob Softmax**: Comprova que $\text{Softmax}(Q K^T) = \text{Softmax}(Q (K - \bar{k})^T)$ com erro residual $< 10^{-6}$ e Cosine Similarity $> 0.999999$.
+2. **Auditoria de Tipos de Dados e Acumuladores de Hardware**: Verifica que os tensores $Q, K$ são efetivamente quantizados para `torch.int8` e que o GEMM acumula em `torch.int32`.
+3. **Invariância de Tiling por Blocos**: Valida que o processamento em tiles com online softmax produz resultados indistinguíveis do cálculo completo para blocos de tamanho $\{16, 32, 64, 128\}$.
+4. **Paridade Numérica e Fidelidade contra FP32 no Encoder PARSeq**: Mede a fidelidade das ativações de saída do bloco do Encoder contra FP32 ($\text{CosSim} > 0.999$, $\text{SQNR} > 41$ dB).
+5. **Resiliência a Outliers de Ativação vs INT-FlashAttention**: Injeta outliers sintéticos em canais específicos de $K$ e demonstra empiricamente que o Key Smoothing supera o INT-FlashAttention sem suavização por mais de $+15$ dB de SQNR.
+
+```bash
+python tools/validate_sage_attention.py
+```
+*Não requer parâmetros de linha de comando; executa as 5 auditorias com asserts científicos.*
+
+---
+
+### 4.4 `tools/validate_onnx.py`
 Audita a concordância numérica entre a saída do grafo ONNX executado pelo ONNX Runtime e a saída de referência do modelo PyTorch original.
 
 ```bash
@@ -417,7 +439,7 @@ python tools/validate_onnx.py [--checkpoint pretrained/parseq_alpr_98.5.ckpt] [-
 
 ---
 
-### 4.4 `tools/validate_tensorrt.py`
+### 4.5 `tools/validate_tensorrt.py`
 Compara as predições e os logits gerados pela engine TensorRT contra o modelo de referência PyTorch, identificando divergências e informando o índice do primeiro caractere divergente caso ocorra descasamento.
 
 ```bash
@@ -433,7 +455,7 @@ python tools/validate_tensorrt.py --engine trt/parseq_m1_nar_fp16.engine [--prec
 
 ---
 
-### 4.5 `tools/layer_sensitivity.py`
+### 4.6 `tools/layer_sensitivity.py`
 Avalia individualmente cada camada não-linear do Transformer (GELU e Softmax) sob diferentes estratégias de quantização inteira (I-BERT, I-ViT e IPTQ), gerando um relatório em CSV e a atribuição ótima de aproximação polinomial em JSON.
 
 ```bash

@@ -17,6 +17,7 @@ from strhub.quant.integer_gelu import IBERTGELU, IViTGELU, IPTQDataAwarePolyGELU
 from strhub.quant.integer_softmax import IBERTSoftmax, IViTShiftmax, IPTQBitSoftmax, SoftmaxFP32
 from strhub.quant.integer_layernorm import IBERTLayerNorm, IPTQLayerNorm, LayerNormFP32, integer_sqrt_newton
 from strhub.quant.unified_metric import compute_unified_metric, softplus
+from strhub.quant.sage_attention import smooth_k, sage_attention_forward, SageAttention
 from strhub.models.parseq.model import PARSeq
 from strhub.models.parseq.quantized_parseq import create_model_variant
 
@@ -429,6 +430,79 @@ def test_int_flashattention_model_integration():
     for bs in [1, 3, 7]:
         x = torch.randn(bs, 3, 32, 128)
         encoded = m5_int_fa.encode(x)
+        assert encoded.shape == (bs, 128, 384)
+        assert torch.isfinite(encoded).all()
+
+        out = wrapper(x)
+        assert out.shape == (bs, 8, 36)
+        assert torch.isfinite(out).all()
+
+
+def test_sage_attention_math_and_smoothing():
+    """Verify mathematical properties of SageAttention (arXiv:2410.02367v9 - ICLR 2025)."""
+    torch.manual_seed(42)
+    B, H, N, d = 2, 4, 32, 64
+    q = torch.randn(B, H, N, d)
+    k = torch.randn(B, H, N, d)
+    v = torch.randn(B, H, N, d)
+
+    # 1. Softmax invariance of key smoothing (Eq. 6)
+    k_smooth = smooth_k(k)
+    p_orig = F.softmax((q / math.sqrt(d)) @ k.transpose(-2, -1), dim=-1)
+    p_smooth = F.softmax((q / math.sqrt(d)) @ k_smooth.transpose(-2, -1), dim=-1)
+    assert (p_orig - p_smooth).abs().max() < 1e-5
+    assert compute_cosine_similarity(p_orig, p_smooth) > 0.99999
+
+    # 2. SAGEAttn-B and SAGEAttn-vB execution
+    out_b, diag_b = sage_attention_forward(q, k, v, mode="sageattn_b", return_diagnostics=True)
+    assert diag_b["q_int_dtype"] == "torch.int8"
+    assert diag_b["k_int_dtype"] == "torch.int8"
+    assert torch.isfinite(out_b).all()
+
+    out_vb, diag_vb = sage_attention_forward(q, k, v, mode="sageattn_vb", return_diagnostics=True)
+    assert diag_vb["v_int_dtype"] == "torch.int8"
+    assert torch.isfinite(out_vb).all()
+
+    # 3. High cosine similarity against FP32 attention
+    fp32_ref = p_orig @ v
+    assert compute_cosine_similarity(fp32_ref, out_b) > 0.999
+    assert compute_cosine_similarity(fp32_ref, out_vb) > 0.995
+
+
+def test_sage_attention_model_integration():
+    """Verify integration of SageAttention into PARSeq model variants and dynamic batching."""
+    from unittest.mock import MagicMock
+    from tools.export_onnx import ONNXExportWrapper
+
+    model = PARSeq(
+        num_tokens=38,
+        max_label_length=7,
+        img_size=[32, 128],
+        patch_size=[4, 8],
+        embed_dim=384,
+        enc_num_heads=6,
+        enc_mlp_ratio=4,
+        enc_depth=2,
+        dec_num_heads=6,
+        dec_mlp_ratio=4,
+        dec_depth=1,
+        decode_ar=False,
+        refine_iters=0,
+        dropout=0.0,
+    )
+
+    # Build M5 with SageAttention
+    m5_sage = create_model_variant("m5", model, use_sage_attention=True)
+    assert m5_sage.encoder.blocks[0].attn.use_sage_attention is True
+    assert m5_sage.encoder.blocks[0].attn.sage_attn is not None
+
+    tokenizer = MagicMock()
+    tokenizer.bos_id = 0
+    wrapper = ONNXExportWrapper(m5_sage, tokenizer)
+
+    for bs in [1, 2]:
+        x = torch.randn(bs, 3, 32, 128)
+        encoded = m5_sage.encode(x)
         assert encoded.shape == (bs, 128, 384)
         assert torch.isfinite(encoded).all()
 

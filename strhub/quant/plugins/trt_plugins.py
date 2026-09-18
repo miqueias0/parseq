@@ -50,6 +50,34 @@ class INTFlashAttentionPluginOp(torch.autograd.Function):
         return g.op("INTFlashAttentionPlugin", q, k, v, scale_f=float(scale))
 
 
+class SageAttentionPluginOp(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, scale: float, mode: int = 0) -> torch.Tensor:
+        if q.is_cuda:
+            dll = get_plugin_dll()
+            out = torch.empty_like(q)
+            B, H, N, D = q.shape
+            S = k.shape[2]
+            stream = torch.cuda.current_stream()
+            dll.run_sage_attention(
+                ctypes.c_void_p(out.data_ptr()),
+                ctypes.c_void_p(q.data_ptr()),
+                ctypes.c_void_p(k.data_ptr()),
+                ctypes.c_void_p(v.data_ptr()),
+                ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
+                ctypes.c_float(scale),
+                ctypes.c_int(mode),
+                ctypes.c_void_p(stream.cuda_stream)
+            )
+            return out
+        from strhub.quant.sage_attention import sage_attention_forward
+        return sage_attention_forward(q, k, v, scale=scale, mode="sageattn_b" if mode == 0 else "sageattn_vb")
+
+    @staticmethod
+    def symbolic(g, q, k, v, scale, mode=0):
+        return g.op("SageAttentionPlugin", q, k, v, scale_f=float(scale), mode_i=int(mode))
+
+
 class IntegerLayerNormPluginOp(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
@@ -266,6 +294,104 @@ class INTFlashAttentionPluginCreator(trt.IPluginCreator):
         else:
             scale = 0.125
         return INTFlashAttentionPluginDynamic(scale=scale)
+
+
+class SageAttentionPluginDynamic(trt.IPluginV2DynamicExt):
+    """TensorRT Plugin for fused SageAttention (Algorithm 1 from arXiv:2410.02367v9).
+    Features token-averaged key smoothing, INT8 x INT8 -> INT32 GEMM, and online softmax.
+    Inputs:
+      - 0: Q (Float32, shape [B, H, N, D])
+      - 1: K (Float32, shape [B, H, S, D])
+      - 2: V (Float32, shape [B, H, S, D])
+    Outputs:
+      - 0: Out (Float32, shape [B, H, N, D])
+    """
+    def __init__(self, scale: float = 0.125, mode: int = 0):
+        super().__init__()
+        self.plugin_type = "SageAttentionPlugin"
+        self.plugin_version = "1"
+        self.plugin_namespace = ""
+        self.num_outputs = 1
+        self.scale = float(scale)
+        self.mode = int(mode)
+
+    def get_output_datatype(self, index: int, input_types: List[trt.DataType]) -> trt.DataType:
+        return input_types[0]
+
+    def get_output_dimensions(self, output_index: int, inputs: List[trt.DimsExprs], expr_builder: trt.IExprBuilder) -> trt.DimsExprs:
+        return inputs[0]
+
+    def supports_format_combination(self, pos: int, in_out: List[trt.PluginTensorDesc], num_inputs: int) -> bool:
+        desc = in_out[pos]
+        return desc.format == trt.TensorFormat.LINEAR and desc.type in [trt.DataType.FLOAT, trt.DataType.HALF]
+
+    def configure_plugin(self, in_desc: List[trt.DynamicPluginTensorDesc], out_desc: List[trt.DynamicPluginTensorDesc]):
+        pass
+
+    def get_workspace_size(self, in_desc: List[trt.PluginTensorDesc], out_desc: List[trt.PluginTensorDesc]) -> int:
+        return 0
+
+    def enqueue(self, input_desc: List[trt.PluginTensorDesc], output_desc: List[trt.PluginTensorDesc],
+                inputs: List[int], outputs: List[int], workspace: int, stream: int) -> int:
+        dll = get_plugin_dll()
+        dims_q = input_desc[0].dims
+        B, H, N, D = dims_q[0], dims_q[1], dims_q[2], dims_q[3]
+        dims_k = input_desc[1].dims
+        S = dims_k[2]
+
+        q_ptr = ctypes.c_void_p(inputs[0])
+        k_ptr = ctypes.c_void_p(inputs[1])
+        v_ptr = ctypes.c_void_p(inputs[2])
+        out_ptr = ctypes.c_void_p(outputs[0])
+        stream_ptr = ctypes.c_void_p(stream)
+
+        dll.run_sage_attention(
+            out_ptr, q_ptr, k_ptr, v_ptr,
+            ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
+            ctypes.c_float(self.scale),
+            ctypes.c_int(self.mode),
+            stream_ptr
+        )
+        return 0
+
+    def clone(self) -> "SageAttentionPluginDynamic":
+        return SageAttentionPluginDynamic(scale=self.scale, mode=self.mode)
+
+    def get_serialization_size(self) -> int:
+        return struct.calcsize("fi")
+
+    def serialize(self) -> bytes:
+        return struct.pack("fi", self.scale, self.mode)
+
+
+class SageAttentionPluginCreator(trt.IPluginCreator):
+    def __init__(self):
+        super().__init__()
+        self.name = "SageAttentionPlugin"
+        self.plugin_version = "1"
+        self.plugin_namespace = ""
+        self.field_names = trt.PluginFieldCollection()
+
+    def create_plugin(self, name: str, field_collection: trt.PluginFieldCollection_) -> trt.IPluginV2:
+        scale = 0.125
+        mode = 0
+        for field in field_collection:
+            if field.name == "scale":
+                scale = float(field.data[0]) if hasattr(field.data, "__getitem__") else float(field.data)
+            elif field.name == "mode":
+                mode = int(field.data[0]) if hasattr(field.data, "__getitem__") else int(field.data)
+        return SageAttentionPluginDynamic(scale=scale, mode=mode)
+
+    def deserialize_plugin(self, name: str, serialized_plugin: bytes) -> trt.IPluginV2:
+        if len(serialized_plugin) >= struct.calcsize("fi"):
+            scale, mode = struct.unpack("fi", serialized_plugin[:struct.calcsize("fi")])
+        elif len(serialized_plugin) >= struct.calcsize("f"):
+            scale = struct.unpack("f", serialized_plugin[:struct.calcsize("f")])[0]
+            mode = 0
+        else:
+            scale = 0.125
+            mode = 0
+        return SageAttentionPluginDynamic(scale=scale, mode=mode)
 
 
 # ==============================================================================
@@ -502,6 +628,7 @@ def register_parseq_plugins():
 
     creators = [
         INTFlashAttentionPluginCreator(),
+        SageAttentionPluginCreator(),
         IntegerLayerNormPluginCreator(),
         IntegerGELUPluginCreator(),
         IntegerSoftmaxPluginCreator(),

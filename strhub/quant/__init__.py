@@ -12,4 +12,5 @@ from .integer_gelu import IBERTGELU, IViTGELU, IPTQDataAwarePolyGELU, GELUFP32
 from .integer_softmax import IBERTSoftmax, IViTShiftmax, IPTQBitSoftmax, SoftmaxFP32
 from .integer_layernorm import IBERTLayerNorm, IPTQLayerNorm, LayerNormFP32
 from .int_flashattention import INTFlashAttention, FusedINTFlashAttentionWrapper, int_flashattention_forward
+from .sage_attention import SageAttention, sage_attention_forward, smooth_k
 from .unified_metric import compute_unified_metric, evaluate_layer_candidates

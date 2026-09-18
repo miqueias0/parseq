@@ -98,6 +98,8 @@ def export_onnx(
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
     use_int_flashattention: bool = False,
+    use_sage_attention: bool = False,
+    sage_mode: str = "sageattn_b",
     use_plugin: bool = False,
 ) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -112,7 +114,7 @@ def export_onnx(
 
     calib_file = "results/calibration/calibration_stats.json"
     is_already_quant = any(isinstance(m, QuantizedLinear) for m in system.modules())
-    has_custom_fusion = (fuse_mha or fuse_mlp or fuse_layernorm or use_int_flashattention or use_plugin)
+    has_custom_fusion = (fuse_mha or fuse_mlp or fuse_layernorm or use_int_flashattention or use_sage_attention or use_plugin)
     if is_already_quant and variant == "m6" and not has_custom_fusion:
         model = copy.deepcopy(system.model).eval().to(device)
     else:
@@ -124,6 +126,8 @@ def export_onnx(
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=use_int_flashattention,
+            use_sage_attention=use_sage_attention,
+            sage_mode=sage_mode,
             use_plugin=use_plugin,
         ).eval().to(device)
 
@@ -289,7 +293,10 @@ if __name__ == "__main__":
     parser.add_argument("--fuse_mlp", action="store_true", help="Emit canonical GELU allowing TensorRT FC1+GELU+FC2 GEMM kernel fusion")
     parser.add_argument("--fuse_layernorm", action="store_true", help="Emit canonical LayerNorm allowing TensorRT Myelin LayerNorm kernel fusion")
     parser.add_argument("--use_int_flashattention", action="store_true", help="Use INT-FlashAttention (arXiv:2409.16997v2)")
-    parser.add_argument("--use_plugin", action="store_true", help="Use custom TensorRT plugins (INTFlashAttention, LayerNorm, GELU, Softmax)")
+    parser.add_argument("--use_sage_attention", action="store_true", help="Use SageAttention (arXiv:2410.02367v9 - ICLR 2025)")
+    parser.add_argument("--sage_mode", type=str, default="sageattn_b", choices=["sageattn_b", "sageattn_vb"],
+                        help="SageAttention mode: sageattn_b (Algorithm 1 with float V) or sageattn_vb (fully INT8)")
+    parser.add_argument("--use_plugin", action="store_true", help="Use custom TensorRT plugins (INTFlashAttention, SageAttention, LayerNorm, GELU, Softmax)")
     parser.add_argument("--fusion_level", type=str, default="none", choices=["none", "shapes", "mha", "mlp", "all"],
                         help="Preset level of kernel fusion: none, shapes, mha (shapes+mha), mlp (shapes+mha+mlp), or all (full fusion)")
     args = parser.parse_args()
@@ -321,5 +328,7 @@ if __name__ == "__main__":
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=args.use_int_flashattention,
+            use_sage_attention=args.use_sage_attention,
+            sage_mode=args.sage_mode,
             use_plugin=args.use_plugin,
         )

@@ -12,6 +12,7 @@ from strhub.quant.integer_gelu import IBERTGELU, IViTGELU, IPTQDataAwarePolyGELU
 from strhub.quant.integer_softmax import IBERTSoftmax, IViTShiftmax, IPTQBitSoftmax, SoftmaxFP32
 from strhub.quant.integer_layernorm import IBERTLayerNorm, IPTQLayerNorm, LayerNormFP32
 from strhub.quant.int_flashattention import INTFlashAttention
+from strhub.quant.sage_attention import SageAttention
 from strhub.quant.plugins.trt_plugins import (
     IntegerLayerNormPluginWrapper,
     IntegerGELUPluginWrapper,
@@ -178,6 +179,8 @@ class AttentionSoftmaxWrapper(nn.Module):
         softmax_module: nn.Module,
         fuse_mha: bool = False,
         use_int_flashattention: bool = False,
+        use_sage_attention: bool = False,
+        sage_mode: str = "sageattn_b",
         block_r: int = 64,
         block_c: int = 64,
         bits: int = 8,
@@ -192,6 +195,8 @@ class AttentionSoftmaxWrapper(nn.Module):
         self.softmax = softmax_module
         self.fuse_mha = fuse_mha
         self.use_int_flashattention = use_int_flashattention
+        self.use_sage_attention = use_sage_attention
+        self.sage_mode = sage_mode
         self.v_quant_mode = v_quant_mode
         self.use_plugin = use_plugin
 
@@ -199,8 +204,22 @@ class AttentionSoftmaxWrapper(nn.Module):
         if hasattr(self.attn, "fused_attn"):
             self.attn.fused_attn = False
 
+        embed_dim = self.attn.attn_dim if hasattr(self.attn, "attn_dim") else self.attn.qkv.out_features // 3
+        if self.use_sage_attention:
+            self.sage_attn = SageAttention(
+                embed_dim=embed_dim,
+                num_heads=self.attn.num_heads,
+                block_r=block_r,
+                block_c=block_c,
+                bits=bits,
+                mode=sage_mode,
+                smooth=True,
+                use_plugin=use_plugin,
+            )
+        else:
+            self.sage_attn = None
+
         if self.use_int_flashattention:
-            embed_dim = self.attn.attn_dim if hasattr(self.attn, "attn_dim") else self.attn.qkv.out_features // 3
             self.int_flash_attn = INTFlashAttention(
                 embed_dim=embed_dim,
                 num_heads=self.attn.num_heads,
@@ -227,7 +246,11 @@ class AttentionSoftmaxWrapper(nn.Module):
         q, k, v = qkv.unbind(0)
         q, k = self.attn.q_norm(q), self.attn.k_norm(k)
 
-        if self.use_int_flashattention and self.int_flash_attn is not None:
+        if self.use_sage_attention and self.sage_attn is not None:
+            # SageAttention (arXiv:2410.02367v9)
+            # Smooth K, INT8 GEMMs, Online Softmax
+            x = self.sage_attn(q, k, v, attn_mask=attn_mask)
+        elif self.use_int_flashattention and self.int_flash_attn is not None:
             # INT-FlashAttention (arXiv:2409.16997v2)
             # Fully INT8 Q@K^T, online softmax, and INT8 Attn@V fused in SRAM
             x = self.int_flash_attn(q, k, v, attn_mask=attn_mask)
@@ -295,12 +318,14 @@ def replace_nonlinear_modules(
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
     use_int_flashattention: bool = False,
+    use_sage_attention: bool = False,
+    sage_mode: str = "sageattn_b",
     v_quant_mode: str = "per_tensor",
     use_plugin: bool = False,
 ) -> nn.Module:
     """Replace activation functions and LayerNorms with chosen integer-only approximations,
-    or with canonical fused primitives when flags fuse_mha, fuse_mlp, fuse_layernorm, or
-    use_int_flashattention (arXiv:2409.16997v2) are active."""
+    or with canonical fused primitives when flags fuse_mha, fuse_mlp, fuse_layernorm,
+    use_int_flashattention (arXiv:2409.16997v2) or use_sage_attention (arXiv:2410.02367v9) are active."""
     gelu_map = {
         "gelu_fp32": GELUFP32,
         "gelu_ibert": IBERTGELU,
@@ -322,7 +347,7 @@ def replace_nonlinear_modules(
         "layernorm_plugin": IntegerLayerNormPluginWrapper,
     }
 
-    if use_plugin and not use_int_flashattention:
+    if use_plugin and not use_int_flashattention and not use_sage_attention:
         softmax_name = "softmax_plugin"
     if use_plugin and not fuse_mlp:
         gelu_name = "gelu_plugin"
@@ -392,7 +417,7 @@ def replace_nonlinear_modules(
                         new_ln.bias.data.copy_(old_ln.bias.data)
                         setattr(block, ln_attr, new_ln)
 
-                # Attention Softmax / INT-FlashAttention
+                # Attention Softmax / INT-FlashAttention / SageAttention
                 if hasattr(block, "attn"):
                     sm_mod = softmax_map.get(chosen_sm, IPTQBitSoftmax)(dim=-1)
                     block.attn = AttentionSoftmaxWrapper(
@@ -400,6 +425,8 @@ def replace_nonlinear_modules(
                         sm_mod,
                         fuse_mha=fuse_mha,
                         use_int_flashattention=use_int_flashattention,
+                        use_sage_attention=use_sage_attention,
+                        sage_mode=sage_mode,
                         v_quant_mode=v_quant_mode,
                         use_plugin=use_plugin,
                     )
@@ -458,6 +485,8 @@ def create_model_variant(
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
     use_int_flashattention: bool = False,
+    use_sage_attention: bool = False,
+    sage_mode: str = "sageattn_b",
     v_quant_mode: str = "per_tensor",
     use_plugin: bool = False,
 ) -> nn.Module:
@@ -515,6 +544,8 @@ def create_model_variant(
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=use_int_flashattention,
+            use_sage_attention=use_sage_attention,
+            sage_mode=sage_mode,
             v_quant_mode=v_quant_mode,
             use_plugin=use_plugin,
         )
@@ -536,6 +567,8 @@ def create_model_variant(
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=use_int_flashattention,
+            use_sage_attention=use_sage_attention,
+            sage_mode=sage_mode,
             v_quant_mode=v_quant_mode,
             use_plugin=use_plugin,
         )

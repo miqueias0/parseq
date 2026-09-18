@@ -231,6 +231,61 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m6_plugin_all.onnx",
         "engine_path": "trt/parseq_m6_plugin_all.engine",
     },
+    # 8. SageAttention Variants (Paper 2410.02367: Key Smoothing + INT8 Attention)
+    {
+        "id": "m5_sage_attn",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-B)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m5_sage.onnx",
+        "engine_path": "trt/parseq_m5_sage_int8.engine",
+    },
+    {
+        "id": "m6_sage_attn",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-B)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m6_sage.onnx",
+        "engine_path": "trt/parseq_m6_sage.engine",
+    },
+    {
+        "id": "m5_sage_plugin_fused",
+        "label": "M5: Integer-Only PTQ + SageAttention Plugin (Fused)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m5_sage_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m5_sage_plugin_fused.engine",
+    },
+    {
+        "id": "m6_sage_plugin_fused",
+        "label": "M6: Integer-Only QAT + SageAttention Plugin (Fused)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m6_sage_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m6_sage_plugin_fused.engine",
+    },
 ]
 
 
@@ -272,7 +327,8 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False) -> Dict[s
             "variant": cfg["variant"],
             "precision": cfg["precision"],
             "fusion": cfg["fusion_level"],
-            "int_fa": cfg["use_int_fa"],
+            "int_fa": cfg.get("use_int_fa", False),
+            "sage_attn": cfg.get("use_sage", False),
             "onnx_size_mb": None,
             "engine_size_mb": None,
             "latency_b1_mean": None,
@@ -304,7 +360,9 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False) -> Dict[s
                     fuse_mha=fuse_mha,
                     fuse_mlp=fuse_mlp,
                     fuse_layernorm=fuse_layernorm,
-                    use_int_flashattention=cfg["use_int_fa"],
+                    use_int_flashattention=cfg.get("use_int_fa", False),
+                    use_sage_attention=cfg.get("use_sage", False),
+                    sage_mode=cfg.get("sage_mode", "sageattn_b"),
                     use_plugin=cfg.get("use_plugin", False),
                 )
             record["onnx_size_mb"] = round(os.path.getsize(cfg["onnx_path"]) / (1024 * 1024), 2)
@@ -384,11 +442,12 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False) -> Dict[s
     report_md_path = "results/full_matrix_benchmark_report.md"
     with open(report_md_path, "w", encoding="utf-8") as f:
         f.write("# Relatório Comparativo Completo: Matriz de Variantes PARSeq\n\n")
-        f.write("| Variante | Precisão | Fusão | INT-Flash | Engine (MB) | Latência B1 (ms) | FPS B1 | Latência B32 (ms) | FPS B32 | Acurácia Placa (%) | NED (%) | Status |\n")
+        f.write("| Variante | Precisão | Fusão | Atenção | Engine (MB) | Latência B1 (ms) | FPS B1 | Latência B32 (ms) | FPS B32 | Acurácia Placa (%) | NED (%) | Status |\n")
         f.write("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
         for r in summary_records:
+            attn_type = "SageAttn" if r.get("sage_attn") else ("INT-Flash" if r.get("int_fa") else "Padrão")
             f.write(
-                f"| {r['label']} | {r['precision'].upper()} | {r['fusion']} | {'Sim' if r['int_fa'] else 'Não'} | "
+                f"| {r['label']} | {r['precision'].upper()} | {r['fusion']} | {attn_type} | "
                 f"{r['engine_size_mb']} | {r['latency_b1_mean']} | {r['fps_b1']} | {r['latency_b32_mean']} | {r['fps_b32']} | "
                 f"{r['exact_acc']}% | {r['ned']}% | {r['status']} |\n"
             )

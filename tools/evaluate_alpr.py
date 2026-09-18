@@ -266,6 +266,10 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--use_int_flashattention", action="store_true", default=False,
                         help="Habilita INT-FlashAttention (arXiv:2409.16997v2) com GEMMs INT8 e online softmax fundido")
+    parser.add_argument("--use_sage_attention", action="store_true", default=False,
+                        help="Habilita SageAttention (arXiv:2410.02367v9 - ICLR 2025) com smoothing de K e GEMMs INT8")
+    parser.add_argument("--sage_mode", type=str, default="sageattn_b", choices=["sageattn_b", "sageattn_vb"],
+                        help="SageAttention mode: sageattn_b (float V) ou sageattn_vb (fully INT8)")
     parser.add_argument("--output", type=str, default=None)
     args = parser.parse_args()
 
@@ -290,7 +294,10 @@ if __name__ == "__main__":
         if "qat" in target_lower or args.variant == "m6":
             system = load_from_checkpoint(args.base_checkpoint).eval()
             model = create_model_variant(
-                "m6", system.model, use_int_flashattention=args.use_int_flashattention
+                "m6", system.model,
+                use_int_flashattention=args.use_int_flashattention,
+                use_sage_attention=args.use_sage_attention,
+                sage_mode=args.sage_mode,
             ).eval().to(dev)
             qat_ckpt_path = target_path if "qat" in target_lower else "pretrained/parseq_alpr_qat_m6.ckpt"
             if os.path.exists(qat_ckpt_path):
@@ -302,7 +309,10 @@ if __name__ == "__main__":
         else:
             system = load_from_checkpoint(target_path).eval()
             model = create_model_variant(
-                args.variant, system.model, use_int_flashattention=args.use_int_flashattention
+                args.variant, system.model,
+                use_int_flashattention=args.use_int_flashattention,
+                use_sage_attention=args.use_sage_attention,
+                sage_mode=args.sage_mode,
             ).eval().to(dev)
 
         print(f"--- Evaluating PyTorch Variant {args.variant.upper()} on {args.dataset} ---")
