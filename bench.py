@@ -30,7 +30,10 @@ def main(config: DictConfig):
     # For consistent behavior
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True)
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except TypeError:
+        torch.use_deterministic_algorithms(True)
 
     device = config.get('device', 'cuda')
 

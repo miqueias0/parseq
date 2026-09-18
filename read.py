@@ -28,11 +28,15 @@ from strhub.models.utils import load_from_checkpoint, parse_model_args
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('checkpoint', help="Model checkpoint (or 'pretrained=<model_id>')")
-    parser.add_argument('--images', nargs='+', help='Images to read')
+    parser.add_argument('--images', nargs='+', default=[], help='Images to read')
     parser.add_argument('--device', default='cuda')
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
     print(f'Additional keyword arguments: {kwargs}')
+
+    if not args.images:
+        print("Nenhuma imagem informada. Especifique imagens via --images <img1> <img2>...")
+        return
 
     model = load_from_checkpoint(args.checkpoint, **kwargs).eval().to(args.device)
     img_transform = SceneTextDataModule.get_transform(model.hparams.img_size)

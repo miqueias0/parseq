@@ -46,6 +46,9 @@ class Result:
 
 
 def print_results_table(results: list[Result], file=None):
+    if not results:
+        print("Nenhum resultado para exibir.", file=file)
+        return
     w = max(map(len, map(getattr, results, ['dataset'] * len(results))))
     w = max(w, len('Dataset'), len('Combined'))
     print('| {:<{w}} | # samples | Accuracy | 1 - NED | Confidence | Label Length |'.format('Dataset', w=w), file=file)
