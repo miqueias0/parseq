@@ -97,6 +97,7 @@ def export_onnx(
     fuse_mha: bool = False,
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
+    use_int_flashattention: bool = False,
 ) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     device = torch.device("cpu") # Export from CPU for broad ONNX converter compatibility
@@ -110,7 +111,7 @@ def export_onnx(
 
     calib_file = "results/calibration/calibration_stats.json"
     is_already_quant = any(isinstance(m, QuantizedLinear) for m in system.modules())
-    has_custom_fusion = (fuse_mha or fuse_mlp or fuse_layernorm)
+    has_custom_fusion = (fuse_mha or fuse_mlp or fuse_layernorm or use_int_flashattention)
     if is_already_quant and variant == "m6" and not has_custom_fusion:
         model = copy.deepcopy(system.model).eval().to(device)
     else:
@@ -121,6 +122,7 @@ def export_onnx(
             fuse_mha=fuse_mha,
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
+            use_int_flashattention=use_int_flashattention,
         ).eval().to(device)
 
     # Load fine-tuned weights for M6
@@ -283,6 +285,7 @@ if __name__ == "__main__":
     parser.add_argument("--fuse_mha", action="store_true", help="Emit canonical Softmax pattern allowing TensorRT FlashAttention/FMHA kernel fusion")
     parser.add_argument("--fuse_mlp", action="store_true", help="Emit canonical GELU allowing TensorRT FC1+GELU+FC2 GEMM kernel fusion")
     parser.add_argument("--fuse_layernorm", action="store_true", help="Emit canonical LayerNorm allowing TensorRT Myelin LayerNorm kernel fusion")
+    parser.add_argument("--use_int_flashattention", action="store_true", help="Habilita INT-FlashAttention (arXiv:2409.16997v2) com GEMMs INT8 e online softmax fundido")
     parser.add_argument("--fusion_level", type=str, default="none", choices=["none", "shapes", "mha", "mlp", "all"],
                         help="Preset level of kernel fusion: none, shapes, mha (shapes+mha), mlp (shapes+mha+mlp), or all (full fusion)")
     args = parser.parse_args()
@@ -311,4 +314,6 @@ if __name__ == "__main__":
             fuse_mha=fuse_mha,
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
+            use_int_flashattention=args.use_int_flashattention,
         )
+

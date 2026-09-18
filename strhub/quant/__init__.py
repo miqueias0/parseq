@@ -11,4 +11,5 @@ from .quant_utils import (
 from .integer_gelu import IBERTGELU, IViTGELU, IPTQDataAwarePolyGELU, GELUFP32
 from .integer_softmax import IBERTSoftmax, IViTShiftmax, IPTQBitSoftmax, SoftmaxFP32
 from .integer_layernorm import IBERTLayerNorm, IPTQLayerNorm, LayerNormFP32
+from .int_flashattention import INTFlashAttention, FusedINTFlashAttentionWrapper, int_flashattention_forward
 from .unified_metric import compute_unified_metric, evaluate_layer_candidates

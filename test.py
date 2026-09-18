@@ -209,6 +209,8 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--variant', default=None, choices=['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6'],
                         help="Quantization / Architecture variant: m0 (FP32 AR), m1 (FP32 NAR), m2 (FP16 NAR), m3 (INT8 Naive), m4 (INT8 W8A8), m5 (INT8 Integer-Only PTQ I-BERT/IPTQ-ViT), m6 (INT8 Integer-Only QAT)")
+    parser.add_argument('--use_int_flashattention', action='store_true', default=False,
+                        help="Habilita INT-FlashAttention (arXiv:2409.16997v2) com GEMMs INT8 e online softmax fundido")
     parser.add_argument('--datasets', '--dataset', nargs='+', default=None,
                         help="Datasets to evaluate (e.g. VeSV_pad RodoSol_pad UFPR_ALPR_pad)")
     parser.add_argument('--max_samples', type=int, default=None, help="Optional maximum number of samples per dataset")
@@ -237,7 +239,9 @@ def main():
             # Handle QAT custom checkpoint
             base_sys = load_from_checkpoint(args.base_checkpoint, **kwargs).eval().to(args.device)
             from strhub.models.parseq.quantized_parseq import create_model_variant
-            base_sys.model = create_model_variant("m6", base_sys.model).eval().to(args.device)
+            base_sys.model = create_model_variant(
+                "m6", base_sys.model, use_int_flashattention=args.use_int_flashattention
+            ).eval().to(args.device)
             if os.path.exists(args.checkpoint):
                 ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
                 sd = ckpt.get("model_state_dict", ckpt.get("state_dict", ckpt))
@@ -252,7 +256,9 @@ def main():
             if args.variant:
                 from strhub.models.parseq.quantized_parseq import create_model_variant
                 print(f"Applying quantization/architecture variant: {args.variant.upper()}")
-                model.model = create_model_variant(args.variant, model.model).eval().to(args.device)
+                model.model = create_model_variant(
+                    args.variant, model.model, use_int_flashattention=args.use_int_flashattention
+                ).eval().to(args.device)
                 if args.variant == "m6" and os.path.exists("pretrained/parseq_alpr_qat_m6.ckpt"):
                     ckpt = torch.load("pretrained/parseq_alpr_qat_m6.ckpt", map_location=args.device, weights_only=False)
                     sd = ckpt.get("model_state_dict", ckpt.get("state_dict", ckpt))

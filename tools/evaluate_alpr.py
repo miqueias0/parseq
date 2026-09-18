@@ -262,6 +262,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--use_int_flashattention", action="store_true", default=False,
+                        help="Habilita INT-FlashAttention (arXiv:2409.16997v2) com GEMMs INT8 e online softmax fundido")
     parser.add_argument("--output", type=str, default=None)
     args = parser.parse_args()
 
@@ -285,7 +287,9 @@ if __name__ == "__main__":
         # PyTorch checkpoint evaluation
         if "qat" in target_lower or args.variant == "m6":
             system = load_from_checkpoint(args.base_checkpoint).eval()
-            model = create_model_variant("m6", system.model).eval().to(dev)
+            model = create_model_variant(
+                "m6", system.model, use_int_flashattention=args.use_int_flashattention
+            ).eval().to(dev)
             qat_ckpt_path = target_path if "qat" in target_lower else "pretrained/parseq_alpr_qat_m6.ckpt"
             if os.path.exists(qat_ckpt_path):
                 ckpt = torch.load(qat_ckpt_path, map_location=dev, weights_only=False)
@@ -295,7 +299,9 @@ if __name__ == "__main__":
                 print(f"Loaded trained QAT checkpoint from {qat_ckpt_path} into variant M6.")
         else:
             system = load_from_checkpoint(target_path).eval()
-            model = create_model_variant(args.variant, system.model).eval().to(dev)
+            model = create_model_variant(
+                args.variant, system.model, use_int_flashattention=args.use_int_flashattention
+            ).eval().to(dev)
 
         print(f"--- Evaluating PyTorch Variant {args.variant.upper()} on {args.dataset} ---")
 

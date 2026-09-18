@@ -11,6 +11,7 @@ from strhub.quant.quant_utils import quantize_symmetric, dequantize_symmetric, q
 from strhub.quant.integer_gelu import IBERTGELU, IViTGELU, IPTQDataAwarePolyGELU, GELUFP32
 from strhub.quant.integer_softmax import IBERTSoftmax, IViTShiftmax, IPTQBitSoftmax, SoftmaxFP32
 from strhub.quant.integer_layernorm import IBERTLayerNorm, IPTQLayerNorm, LayerNormFP32
+from strhub.quant.int_flashattention import INTFlashAttention
 
 
 class ONNXQDQ(torch.autograd.Function):
@@ -146,23 +147,36 @@ class QuantizedLinear(nn.Module):
             else:
                 s_w = self.weight.abs().max() / qmax
             s_w = torch.clamp(s_w, min=1e-8)
-            q_w = torch.clamp(torch.round(self.weight / s_w), qmin, qmax)
-            w_hat = self.weight + (q_w * s_w - self.weight).detach()
+            w_q = quantize_naive(self.weight, bits=self.bits)
+            return F.linear(x, w_q, self.bias)
 
-            # Activation quantization with STE:
-            s_x = torch.clamp(x.abs().amax(dim=-1, keepdim=True) / qmax, min=1e-8)
-            q_x = torch.clamp(torch.round(x / s_x), qmin, qmax)
-            x_hat = x + (q_x * s_x - x).detach()
+        elif self.mode in ["conventional_ptq", "integer_only", "qat"]:
+            # Quantize weights per-channel
+            w_q, _ = quantize_symmetric(self.weight, self.weight_scale, bits=self.bits)
+            w_deq = dequantize_symmetric(w_q, self.weight_scale)
 
-            return F.linear(x_hat, w_hat, self.bias)
+            # Quantize activations per-tensor if calibrated
+            if self.calibrated or self.mode == "qat":
+                x_q, _ = quantize_symmetric(x, self.activation_scale, bits=self.bits)
+                x = dequantize_symmetric(x_q, self.activation_scale)
 
+            return F.linear(x, w_deq, self.bias)
         else:
             return F.linear(x, self.weight, self.bias)
 
 
 class AttentionSoftmaxWrapper(nn.Module):
-    """Wraps timm Attention to use candidate integer-only softmax or fused MHA pattern."""
-    def __init__(self, original_attn, softmax_module: nn.Module, fuse_mha: bool = False):
+    """Wraps timm Attention to use candidate integer-only softmax, fused MHA, or INT-FlashAttention (arXiv:2409.16997v2)."""
+    def __init__(
+        self,
+        original_attn,
+        softmax_module: nn.Module,
+        fuse_mha: bool = False,
+        use_int_flashattention: bool = False,
+        block_r: int = 64,
+        block_c: int = 64,
+        bits: int = 8,
+    ):
         super().__init__()
         if isinstance(original_attn, AttentionSoftmaxWrapper):
             self.attn = original_attn.attn
@@ -170,9 +184,23 @@ class AttentionSoftmaxWrapper(nn.Module):
             self.attn = original_attn
         self.softmax = softmax_module
         self.fuse_mha = fuse_mha
-        # Disable fused_attn so explicit softmax is executed
+        self.use_int_flashattention = use_int_flashattention
+
+        # Disable fused_attn so explicit execution takes place
         if hasattr(self.attn, "fused_attn"):
             self.attn.fused_attn = False
+
+        if self.use_int_flashattention:
+            embed_dim = self.attn.attn_dim if hasattr(self.attn, "attn_dim") else self.attn.qkv.out_features // 3
+            self.int_flash_attn = INTFlashAttention(
+                embed_dim=embed_dim,
+                num_heads=self.attn.num_heads,
+                block_r=block_r,
+                block_c=block_c,
+                bits=bits,
+            )
+        else:
+            self.int_flash_attn = None
 
     def __getattr__(self, name: str):
         try:
@@ -188,20 +216,28 @@ class AttentionSoftmaxWrapper(nn.Module):
         q, k, v = qkv.unbind(0)
         q, k = self.attn.q_norm(q), self.attn.k_norm(k)
 
-        q = q * self.attn.scale
-        attn = q @ k.transpose(-2, -1)
-        if attn_mask is not None:
-            attn = attn + attn_mask
-
-        if self.fuse_mha:
+        if self.use_int_flashattention and self.int_flash_attn is not None:
+            # INT-FlashAttention (arXiv:2409.16997v2)
+            # Fully INT8 Q@K^T, online softmax, and INT8 Attn@V fused in SRAM
+            x = self.int_flash_attn(q, k, v, attn_mask=attn_mask)
+        elif self.fuse_mha:
             # Canonical Softmax pattern allowing TensorRT to fuse entire MHA block into FMHA kernel
+            q = q * self.attn.scale
+            attn = q @ k.transpose(-2, -1)
+            if attn_mask is not None:
+                attn = attn + attn_mask
             attn = F.softmax(attn, dim=-1)
+            attn = self.attn.attn_drop(attn)
+            x = attn @ v
         else:
             # Execute chosen candidate integer Softmax (e.g. IPTQBitSoftmax polynomial unrolling)
+            q = q * self.attn.scale
+            attn = q @ k.transpose(-2, -1)
+            if attn_mask is not None:
+                attn = attn + attn_mask
             attn = self.softmax(attn)
-
-        attn = self.attn.attn_drop(attn)
-        x = attn @ v
+            attn = self.attn.attn_drop(attn)
+            x = attn @ v
 
         x = x.transpose(1, 2).reshape(B, N, self.attn.attn_dim)
         x = self.attn.norm(x)
@@ -247,9 +283,11 @@ def replace_nonlinear_modules(
     fuse_mha: bool = False,
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
+    use_int_flashattention: bool = False,
 ) -> nn.Module:
     """Replace activation functions and LayerNorms with chosen integer-only approximations,
-    or with canonical fused primitives when flags fuse_mha, fuse_mlp, fuse_layernorm are active."""
+    or with canonical fused primitives when flags fuse_mha, fuse_mlp, fuse_layernorm, or
+    use_int_flashattention (arXiv:2409.16997v2) are active."""
     gelu_map = {
         "gelu_fp32": GELUFP32,
         "gelu_ibert": IBERTGELU,
@@ -331,10 +369,15 @@ def replace_nonlinear_modules(
                         new_ln.bias.data.copy_(old_ln.bias.data)
                         setattr(block, ln_attr, new_ln)
 
-                # Attention Softmax
+                # Attention Softmax / INT-FlashAttention
                 if hasattr(block, "attn"):
                     sm_mod = softmax_map.get(chosen_sm, IPTQBitSoftmax)(dim=-1)
-                    block.attn = AttentionSoftmaxWrapper(block.attn, sm_mod, fuse_mha=fuse_mha)
+                    block.attn = AttentionSoftmaxWrapper(
+                        block.attn,
+                        sm_mod,
+                        fuse_mha=fuse_mha,
+                        use_int_flashattention=use_int_flashattention,
+                    )
 
         # Encoder final norm
         if hasattr(module.encoder, "norm") and module.encoder.norm is not None:
@@ -389,6 +432,7 @@ def create_model_variant(
     fuse_mha: bool = False,
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
+    use_int_flashattention: bool = False,
 ) -> nn.Module:
     """Build a specific model variant from the evaluation matrix:
     - M0: PARSeq FP32 AR (Autoregressive decoding, refine_iters=1)
@@ -443,6 +487,7 @@ def create_model_variant(
             fuse_mha=fuse_mha,
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
+            use_int_flashattention=use_int_flashattention,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)
@@ -461,6 +506,7 @@ def create_model_variant(
             fuse_mha=fuse_mha,
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
+            use_int_flashattention=use_int_flashattention,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)
