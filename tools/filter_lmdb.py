@@ -25,7 +25,8 @@ def main():
                 with env_in.begin() as txn:
                     num_samples = int(txn.get('num-samples'.encode()))
                 in_samples += num_samples
-                chunks = np.array_split(range(num_samples), num_samples // samples_per_chunk)
+                n_chunks = max(1, num_samples // samples_per_chunk)
+                chunks = np.array_split(range(num_samples), n_chunks)
                 for chunk in chunks:
                     cache = {}
                     with env_in.begin() as txn:

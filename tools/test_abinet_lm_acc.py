@@ -28,9 +28,10 @@ class ABINetLM(ABINet):
             targets.append(torch.as_tensor([self.tokenizer._stoi[c] for c in label]))
             lengths.append(len(label) + 1)
         targets = pad_sequence(targets, batch_first=True, padding_value=0)[1:]  # exclude dummy target
-        lengths = torch.as_tensor(lengths, device=self.device)
+        device = getattr(self, "device", next(self.parameters()).device if list(self.parameters()) else torch.device("cpu"))
+        lengths = torch.as_tensor(lengths, device=device)
         targets = (
-            F.one_hot(targets, len(self.tokenizer._stoi))[..., : len(self.tokenizer._stoi) - 2].float().to(self.device)
+            F.one_hot(targets, len(self.tokenizer._stoi))[..., : len(self.tokenizer._stoi) - 2].float().to(device)
         )
         return targets, lengths
 
@@ -53,7 +54,10 @@ def main():
 
     # charset used by original ABINet
     charset = string.ascii_lowercase + '1234567890'
-    ckpt = torch.load(args.checkpoint)
+    try:
+        ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(args.checkpoint, map_location=args.device)
 
     config = _get_config('abinet', charset_train=charset, charset_test=charset)
     model = ABINetLM(**config)

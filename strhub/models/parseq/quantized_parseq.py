@@ -153,20 +153,19 @@ class QuantizedLinear(nn.Module):
             else:
                 s_w = self.weight.abs().max() / qmax
             s_w = torch.clamp(s_w, min=1e-8)
-            w_q = quantize_naive(self.weight, bits=self.bits)
-            return F.linear(x, w_q, self.bias)
+            w_quant = torch.clamp(torch.round(self.weight / s_w), qmin, qmax) * s_w
+            w_ste = self.weight + (w_quant - self.weight).detach()
 
-        elif self.mode in ["conventional_ptq", "integer_only", "qat"]:
-            # Quantize weights per-channel
-            w_q, _ = quantize_symmetric(self.weight, self.weight_scale, bits=self.bits)
-            w_deq = dequantize_symmetric(w_q, self.weight_scale)
+            # Activation quantization with STE:
+            if self.calibrated:
+                s_x = self.act_scale
+            else:
+                s_x = torch.clamp(x.abs().amax(dim=-1, keepdim=True) / qmax, min=1e-8)
+            x_quant = torch.clamp(torch.round(x / s_x), qmin, qmax) * s_x
+            x_ste = x + (x_quant - x).detach()
 
-            # Quantize activations per-tensor if calibrated
-            if self.calibrated or self.mode == "qat":
-                x_q, _ = quantize_symmetric(x, self.activation_scale, bits=self.bits)
-                x = dequantize_symmetric(x_q, self.activation_scale)
+            return F.linear(x_ste, w_ste, self.bias)
 
-            return F.linear(x, w_deq, self.bias)
         else:
             return F.linear(x, self.weight, self.bias)
 

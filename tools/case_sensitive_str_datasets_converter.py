@@ -4,6 +4,10 @@ import os.path
 import sys
 from pathlib import Path
 
+if len(sys.argv) < 2:
+    print(f"Uso: python {sys.argv[0]} <diretório_dataset>")
+    sys.exit(1)
+
 d = sys.argv[1]
 p = Path(d)
 

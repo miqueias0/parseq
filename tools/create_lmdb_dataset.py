@@ -42,7 +42,12 @@ def createDataset(inputPath, gtFile, outputPath, checkValid=True):
 
     nSamples = len(data)
     for i, line in enumerate(data):
-        imagePath, label = line.strip().split(maxsplit=1)
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        parts = line_clean.split(maxsplit=1)
+        imagePath = parts[0]
+        label = parts[1] if len(parts) > 1 else ""
         imagePath = os.path.join(inputPath, imagePath)
         with open(imagePath, 'rb') as f:
             imageBin = f.read()

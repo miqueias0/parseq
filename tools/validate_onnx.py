@@ -48,8 +48,9 @@ def validate_onnx_model(
         # PyTorch forward
         with torch.no_grad():
             memory = base.encode(dummy_input)
-            pos_queries = base.pos_queries[:, :num_steps].expand(1, -1, -1)
-            tgt_in = torch.full((1, 1), system.tokenizer.bos_id, dtype=torch.long, device=base._device)
+            batch_dummy = torch.zeros_like(dummy_input[:, :1, 0, 0]).unsqueeze(-1)
+            pos_queries = base.pos_queries[:, :num_steps].to(dummy_input.device) + batch_dummy
+            tgt_in = torch.full((1, 1), system.tokenizer.bos_id, dtype=torch.long, device=dummy_input.device)
             tgt_out = base.decode(tgt_in, memory, tgt_query=pos_queries)
             pt_logits = base.head(tgt_out)
 

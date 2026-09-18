@@ -156,10 +156,14 @@ def evaluate_dataset(
             # Forward pass
             if hasattr(model, "tokenizer"):
                 logits = model(images)
+            elif isinstance(model, TensorRTModelWrapper):
+                logits = model(images)
             else:
-                try:
+                import inspect
+                forward_fn = getattr(model, "forward", None)
+                if forward_fn is not None and "tokenizer" in inspect.signature(forward_fn).parameters:
                     logits = model(tokenizer, images)
-                except TypeError:
+                else:
                     logits = model(images)
             probs = logits.softmax(-1)
             preds, prob_tuples = tokenizer.decode(probs)

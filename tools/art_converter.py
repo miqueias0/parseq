@@ -1,8 +1,13 @@
-#!/usr/bin/env python3
-
+import os
+import sys
 import json
 
-with open('train_task2_labels.json', 'r', encoding='utf8') as f:
+labels_file = sys.argv[1] if len(sys.argv) > 1 else 'train_task2_labels.json'
+if not os.path.exists(labels_file):
+    print(f"Arquivo não encontrado: {labels_file}. Uso: python tools/art_converter.py [caminho_labels.json]")
+    sys.exit(0)
+
+with open(labels_file, 'r', encoding='utf8') as f:
     d = json.load(f)
 
 with open('gt.txt', 'w', encoding='utf8') as f:
