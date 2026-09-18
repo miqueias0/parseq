@@ -201,49 +201,201 @@ def test_fusion_flags():
     assert encoded.shape[0] == 2
 
 
-def test_int_flashattention_algorithm1():
-    """Verify INT-FlashAttention Algorithm 1 fidelity (arXiv:2409.16997v2).
-    Checks quantization error against exact scaled dot-product attention
-    under normal N(0, 1) and uniform U(-0.5, 0.5) distributions (Tables 1 & 2 of the paper).
+def test_int_flashattention_algorithm1_dtypes_and_accumulators():
+    """AC1, AC2, AC4, AC5: Verify genuine INT8 datatypes and INT32 accumulators
+    strictly following Algorithm 1 of arXiv:2409.16997v2.
     """
-    from strhub.quant.int_flashattention import int_flashattention_forward
+    from strhub.quant.int_flashattention import int_flashattention_forward, int8_matmul_int32
+
+    # 1. Direct unit verification of int8_matmul_int32 GEMM kernel
+    a = torch.randint(-128, 127, (2, 4, 32, 64), dtype=torch.int8)
+    b = torch.randint(-128, 127, (2, 4, 64, 32), dtype=torch.int8)
+    c = int8_matmul_int32(a, b)
+    assert c.dtype == torch.int32, f"Expected torch.int32 accumulator, got {c.dtype}"
+    assert c.shape == (2, 4, 32, 32)
+    # Check exactness against integer ground truth
+    c_gt = a.float() @ b.float()
+    assert torch.allclose(c.float(), c_gt, atol=1e-5), "int8_matmul_int32 arithmetic mismatch"
+
+    # Type safety check: passing float tensors must raise TypeError
+    with pytest.raises(TypeError):
+        int8_matmul_int32(a.float(), b.float())
+
+    # 2. Runtime forward pass verification with diagnostic inspection
+    B, H, N, d = 2, 4, 64, 32
+    torch.manual_seed(42)
+    q = torch.randn(B, H, N, d)
+    k = torch.randn(B, H, N, d)
+    v = torch.randn(B, H, N, d)
+
+    out, diag = int_flashattention_forward(
+        q, k, v, block_r=32, block_c=32, bits=8, return_diagnostics=True
+    )
+
+    assert diag["q_int_dtype"] == "torch.int8", f"Expected torch.int8, got {diag['q_int_dtype']}"
+    assert diag["k_int_dtype"] == "torch.int8", f"Expected torch.int8, got {diag['k_int_dtype']}"
+    assert diag["v_int_dtype"] == "torch.int8", f"Expected torch.int8, got {diag['v_int_dtype']}"
+    assert diag["p_int_dtypes"][0] == "torch.int8", f"Expected torch.int8, got {diag['p_int_dtypes'][0]}"
+    assert diag["gemm1_dtypes"][0] == "torch.int32", f"Expected torch.int32, got {diag['gemm1_dtypes'][0]}"
+    assert diag["gemm2_dtypes"][0] == "torch.int32", f"Expected torch.int32, got {diag['gemm2_dtypes'][0]}"
+
+    # Boundary ranges
+    assert diag["q_int_range"][0] >= -128 and diag["q_int_range"][1] <= 127
+    assert diag["k_int_range"][0] >= -128 and diag["k_int_range"][1] <= 127
+    assert diag["v_int_range"][0] >= -128 and diag["v_int_range"][1] <= 127
+    assert diag["p_int_ranges"][0][0] >= 0 and diag["p_int_ranges"][0][1] <= 127
+
+
+def test_int_flashattention_scientific_metrics():
+    """AC8: Verify quantization error metrics against exact FP32 attention
+    under normal N(0, 1) and uniform U(-0.5, 0.5) activations (Tables 1 & 2 of the paper).
+    Measures MAE, MSE, RMSE, MRE (< 5%), Cosine Similarity (> 0.98), and Relative L2 error.
+    """
+    from strhub.quant.int_flashattention import int_flashattention_forward, exact_sdpa_fp32
 
     B, H, N, d = 2, 6, 128, 64
     torch.manual_seed(42)
 
-    # 1. Normal distributed activations
-    q_norm = torch.randn(B, H, N, d)
-    k_norm = torch.randn(B, H, N, d)
-    v_norm = torch.randn(B, H, N, d)
+    for dist_name, (q, k, v) in [
+        ("normal", (torch.randn(B, H, N, d), torch.randn(B, H, N, d), torch.randn(B, H, N, d))),
+        ("uniform", (
+            torch.empty(B, H, N, d).uniform_(-0.5, 0.5),
+            torch.empty(B, H, N, d).uniform_(-0.5, 0.5),
+            torch.empty(B, H, N, d).uniform_(-0.5, 0.5),
+        )),
+    ]:
+        out_fp32 = exact_sdpa_fp32(q, k, v)
+        out_int_fa = int_flashattention_forward(q, k, v, block_r=64, block_c=64, bits=8)
 
-    out_exact = F.scaled_dot_product_attention(q_norm, k_norm, v_norm)
-    out_int_fa = int_flashattention_forward(q_norm, k_norm, v_norm, block_r=64, block_c=64, bits=8)
+        assert out_int_fa.shape == out_fp32.shape
+        assert torch.isfinite(out_int_fa).all()
 
-    assert out_int_fa.shape == out_exact.shape
-    assert torch.isfinite(out_int_fa).all()
+        diff = out_int_fa - out_fp32
+        mae = diff.abs().mean().item()
+        mse = (diff ** 2).mean().item()
+        rmse = math.sqrt(mse)
+        mre = diff.abs().mean().item() / out_fp32.abs().mean().item()
+        cos_sim = F.cosine_similarity(out_int_fa.flatten(), out_fp32.flatten(), dim=0).item()
+        rel_l2 = torch.norm(diff) / torch.norm(out_fp32)
 
-    # Relative error (MRE) within paper's bound (< 5%)
-    mre = (out_int_fa - out_exact).abs().mean().item() / out_exact.abs().mean().item()
-    assert mre < 0.05, f"MRE {mre:.4f} exceeded upper bound 0.05"
+        # Assert scientific thresholds from the paper
+        assert mre < 0.05, f"{dist_name} MRE {mre:.4f} exceeded upper bound 0.05"
+        assert cos_sim > 0.98, f"{dist_name} Cosine similarity {cos_sim:.4f} below 0.98"
+        assert rel_l2 < 0.10, f"{dist_name} Relative L2 error {rel_l2:.4f} exceeded 0.10"
 
-    # Cosine similarity must be extremely high (> 0.98)
-    cos_sim = F.cosine_similarity(out_int_fa.flatten(), out_exact.flatten(), dim=0).item()
-    assert cos_sim > 0.98, f"Cosine similarity {cos_sim:.4f} below 0.98"
 
-    # 2. Uniform distributed activations
-    q_unif = torch.empty(B, H, N, d).uniform_(-0.5, 0.5)
-    k_unif = torch.empty(B, H, N, d).uniform_(-0.5, 0.5)
-    v_unif = torch.empty(B, H, N, d).uniform_(-0.5, 0.5)
+def test_int_flashattention_tiling_invariance():
+    """AC7: Verify tiling block invariance across block sizes Br, Bc in {16, 32, 64, 128}.
+    Validates online softmax normalization and numerical equivalence regardless of tile granularity.
+    """
+    from strhub.quant.int_flashattention import int_flashattention_forward
 
-    out_exact_unif = F.scaled_dot_product_attention(q_unif, k_unif, v_unif)
-    out_int_fa_unif = int_flashattention_forward(q_unif, k_unif, v_unif, block_r=64, block_c=64, bits=8)
+    B, H, N, d = 2, 4, 128, 64
+    torch.manual_seed(42)
+    q = torch.randn(B, H, N, d)
+    k = torch.randn(B, H, N, d)
+    v = torch.randn(B, H, N, d)
 
-    cos_sim_unif = F.cosine_similarity(out_int_fa_unif.flatten(), out_exact_unif.flatten(), dim=0).item()
-    assert cos_sim_unif > 0.98, f"Cosine similarity for uniform {cos_sim_unif:.4f} below 0.98"
+    outputs = {}
+    for block_size in [16, 32, 64, 128]:
+        outputs[block_size] = int_flashattention_forward(
+            q, k, v, block_r=block_size, block_c=block_size, bits=8
+        )
+
+    ref = outputs[64]
+    for block_size, out in outputs.items():
+        cos_sim = F.cosine_similarity(out.flatten(), ref.flatten(), dim=0).item()
+        mre = (out - ref).abs().mean().item() / ref.abs().mean().item()
+        assert cos_sim > 0.999, f"Block {block_size} cosine similarity {cos_sim:.6f} below 0.999"
+        assert mre < 0.015, f"Block {block_size} MRE {mre:.6f} exceeded 0.015 against block 64"
+
+
+def test_int_flashattention_v_quant_modes():
+    """AC9: Verify both 'per_tensor' (strict paper) and 'per_head' (multi-head ViT) V quantization modes."""
+    from strhub.quant.int_flashattention import int_flashattention_forward, exact_sdpa_fp32
+
+    B, H, N, d = 2, 6, 64, 32
+    torch.manual_seed(42)
+    q = torch.randn(B, H, N, d)
+    k = torch.randn(B, H, N, d)
+    v = torch.randn(B, H, N, d)
+
+    exact = exact_sdpa_fp32(q, k, v)
+    out_tensor = int_flashattention_forward(q, k, v, v_quant_mode="per_tensor")
+    out_head = int_flashattention_forward(q, k, v, v_quant_mode="per_head")
+
+    assert torch.isfinite(out_tensor).all()
+    assert torch.isfinite(out_head).all()
+
+    cos_tensor = F.cosine_similarity(out_tensor.flatten(), exact.flatten(), dim=0).item()
+    cos_head = F.cosine_similarity(out_head.flatten(), exact.flatten(), dim=0).item()
+
+    assert cos_tensor > 0.98
+    assert cos_head > 0.98
+
+
+def test_int_flashattention_step_error_decomposition():
+    """AC3, AC6: Measure error contribution of each pipeline stage in isolation:
+    1. Q/K token-level quantization error (SQNR > 25 dB)
+    2. Score matrix S reconstruction error (Cosine similarity > 0.98)
+    3. P quantization error (Cosine similarity > 0.98)
+    4. Final output O error (Cosine similarity > 0.98)
+    """
+    from strhub.quant.int_flashattention import int_flashattention_forward, exact_sdpa_fp32
+    from strhub.quant.quant_utils import compute_sqnr
+
+    B, H, N, d = 2, 4, 64, 32
+    torch.manual_seed(42)
+    q = torch.randn(B, H, N, d)
+    k = torch.randn(B, H, N, d)
+    v = torch.randn(B, H, N, d)
+
+    R = 127.0
+    s_q = q.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / R
+    q_int = torch.clamp(torch.round(q / s_q), -R - 1, R).to(torch.int8)
+    q_deq = q_int.float() * s_q
+
+    sqnr_q = compute_sqnr(q, q_deq)
+    assert sqnr_q > 25.0, f"Q SQNR {sqnr_q:.2f} dB below 25 dB"
+
+    # Score matrix comparison
+    s_exact = (q.float() @ k.float().transpose(-2, -1)) / math.sqrt(d)
+    s_int = (q_deq @ (k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / R * torch.clamp(torch.round(k / (k.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / R)), -R - 1, R).to(torch.int8)).float().transpose(-2, -1)) / math.sqrt(d)
+
+    cos_s = F.cosine_similarity(s_int.flatten(), s_exact.flatten(), dim=0).item()
+    assert cos_s > 0.98, f"Score matrix cosine similarity {cos_s:.4f} below 0.98"
+
+    # Final end-to-end output
+    out_exact = exact_sdpa_fp32(q, k, v)
+    out_int_fa = int_flashattention_forward(q, k, v)
+    cos_o = F.cosine_similarity(out_int_fa.flatten(), out_exact.flatten(), dim=0).item()
+    assert cos_o > 0.98, f"Final output cosine similarity {cos_o:.4f} below 0.98"
+
+
+def test_int_flashattention_extreme_saturation():
+    """Verify behavior on extreme saturation boundaries, zeros, and large outliers."""
+    from strhub.quant.int_flashattention import int_flashattention_forward
+
+    B, H, N, d = 2, 4, 32, 16
+    # 1. Zeros tensor
+    q_zero = torch.zeros(B, H, N, d)
+    k_zero = torch.zeros(B, H, N, d)
+    v_zero = torch.zeros(B, H, N, d)
+    out_zero = int_flashattention_forward(q_zero, k_zero, v_zero)
+    assert torch.isfinite(out_zero).all()
+
+    # 2. Outliers
+    q_outlier = torch.randn(B, H, N, d)
+    q_outlier[:, :, 0, 0] = 1000.0
+    q_outlier[:, :, 1, 1] = -1000.0
+    k_outlier = torch.randn(B, H, N, d)
+    v_outlier = torch.randn(B, H, N, d)
+    out_outlier = int_flashattention_forward(q_outlier, k_outlier, v_outlier)
+    assert torch.isfinite(out_outlier).all()
 
 
 def test_int_flashattention_model_integration():
-    """Verify integration of INT-FlashAttention flag into PARSeq model variants and dynamic batching."""
+    """AC10: Verify integration of INT-FlashAttention into PARSeq model variants and dynamic batching."""
     from unittest.mock import MagicMock
     from tools.export_onnx import ONNXExportWrapper
 

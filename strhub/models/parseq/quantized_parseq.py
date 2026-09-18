@@ -176,6 +176,7 @@ class AttentionSoftmaxWrapper(nn.Module):
         block_r: int = 64,
         block_c: int = 64,
         bits: int = 8,
+        v_quant_mode: str = "per_tensor",
     ):
         super().__init__()
         if isinstance(original_attn, AttentionSoftmaxWrapper):
@@ -185,6 +186,7 @@ class AttentionSoftmaxWrapper(nn.Module):
         self.softmax = softmax_module
         self.fuse_mha = fuse_mha
         self.use_int_flashattention = use_int_flashattention
+        self.v_quant_mode = v_quant_mode
 
         # Disable fused_attn so explicit execution takes place
         if hasattr(self.attn, "fused_attn"):
@@ -198,6 +200,7 @@ class AttentionSoftmaxWrapper(nn.Module):
                 block_r=block_r,
                 block_c=block_c,
                 bits=bits,
+                v_quant_mode=v_quant_mode,
             )
         else:
             self.int_flash_attn = None
@@ -284,6 +287,7 @@ def replace_nonlinear_modules(
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
     use_int_flashattention: bool = False,
+    v_quant_mode: str = "per_tensor",
 ) -> nn.Module:
     """Replace activation functions and LayerNorms with chosen integer-only approximations,
     or with canonical fused primitives when flags fuse_mha, fuse_mlp, fuse_layernorm, or
@@ -377,6 +381,7 @@ def replace_nonlinear_modules(
                         sm_mod,
                         fuse_mha=fuse_mha,
                         use_int_flashattention=use_int_flashattention,
+                        v_quant_mode=v_quant_mode,
                     )
 
         # Encoder final norm
@@ -433,6 +438,7 @@ def create_model_variant(
     fuse_mlp: bool = False,
     fuse_layernorm: bool = False,
     use_int_flashattention: bool = False,
+    v_quant_mode: str = "per_tensor",
 ) -> nn.Module:
     """Build a specific model variant from the evaluation matrix:
     - M0: PARSeq FP32 AR (Autoregressive decoding, refine_iters=1)
@@ -488,6 +494,7 @@ def create_model_variant(
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=use_int_flashattention,
+            v_quant_mode=v_quant_mode,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)
@@ -507,6 +514,7 @@ def create_model_variant(
             fuse_mlp=fuse_mlp,
             fuse_layernorm=fuse_layernorm,
             use_int_flashattention=use_int_flashattention,
+            v_quant_mode=v_quant_mode,
         )
         if calibration_file and os.path.exists(calibration_file):
             load_calibration_into_model(model, calibration_file)

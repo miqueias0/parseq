@@ -40,8 +40,10 @@ def quantize_naive(x: torch.Tensor, bits: int = 8) -> Tuple[torch.Tensor, torch.
     """
     qmin = -(1 << (bits - 1))
     qmax = (1 << (bits - 1)) - 1
-    # Directly round float values and clamp into int8 range
-    q = torch.clamp(torch.trunc(x), qmin, qmax)
+    # Directly round float values towards zero and clamp into int8 range
+    # Uses where(x >= 0, floor, ceil) instead of trunc for universal ONNX exporter compatibility
+    trunc_x = torch.where(x >= 0, torch.floor(x), torch.ceil(x))
+    q = torch.clamp(trunc_x, qmin, qmax)
     scale = torch.tensor(1.0, device=x.device, dtype=x.dtype)
     return q, scale
 
