@@ -249,7 +249,8 @@ class SageAttention(nn.Module):
         """
         if self.use_plugin:
             from strhub.quant.plugins.trt_plugins import SageAttentionPluginOp
-            return SageAttentionPluginOp.apply(q, k, v, self.scale)
+            mode_int = 0 if self.mode == "sageattn_b" else 1
+            return SageAttentionPluginOp.apply(q, k, v, self.scale, mode_int)
 
         return sage_attention_forward(
             q=q,

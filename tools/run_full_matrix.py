@@ -14,7 +14,7 @@ import sys
 import time
 import json
 import argparse
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -33,7 +33,9 @@ from strhub.models.utils import load_from_checkpoint
 
 
 CONFIGURATIONS = [
-    # 1. FP32 Baselines
+    # =========================================================================
+    # 1. Floating-Point Baselines & Controls
+    # =========================================================================
     {
         "id": "m0_ar_fp32",
         "label": "M0: FP32 AR Baseline (1 iter)",
@@ -56,7 +58,6 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m1_nar_fp32.onnx",
         "engine_path": "trt/parseq_m1_nar_fp32.engine",
     },
-    # 2. FP16 Baseline
     {
         "id": "m2_nar_fp16",
         "label": "M2: FP16 NAR Baseline",
@@ -68,7 +69,6 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m2_nar_fp16.onnx",
         "engine_path": "trt/parseq_m2_nar_fp16.engine",
     },
-    # 3. Naive INT8 (Negative Control)
     {
         "id": "m3_nar_int8_naive",
         "label": "M3: Naive INT8 NAR (Negative Control)",
@@ -80,10 +80,9 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m3_nar_int8_naive.onnx",
         "engine_path": "trt/parseq_m3_nar_int8_naive.engine",
     },
-    # 4. Conventional W8A8 PTQ
     {
         "id": "m4_nar_int8_ptq",
-        "label": "M4: Conventional W8A8 PTQ",
+        "label": "M4: Conventional W8A8 PTQ Baseline",
         "variant": "m4",
         "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
         "precision": "int8",
@@ -92,7 +91,21 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m4_nar_int8_ptq.onnx",
         "engine_path": "trt/parseq_m4_nar_int8_ptq.engine",
     },
-    # 5. Integer-Only PTQ (M5) Variations
+    {
+        "id": "m4_fused_all",
+        "label": "M4: Conventional W8A8 PTQ (All Fused)",
+        "variant": "m4",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "onnx_path": "onnx/parseq_m4_fused_all.onnx",
+        "engine_path": "trt/parseq_m4_fused_all.engine",
+    },
+
+    # =========================================================================
+    # 2. M5: Integer-Only PTQ - Progressive Kernel Fusion (none -> shapes -> mha -> mlp -> all)
+    # =========================================================================
     {
         "id": "m5_nar_int8_io_ptq",
         "label": "M5: Integer-Only PTQ Baseline",
@@ -105,6 +118,39 @@ CONFIGURATIONS = [
         "engine_path": "trt/parseq_m5_nar_int8_io_ptq.engine",
     },
     {
+        "id": "m5_fused_shapes",
+        "label": "M5: Integer-Only PTQ + Shapes",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": False,
+        "onnx_path": "onnx/parseq_m5_fused_shapes.onnx",
+        "engine_path": "trt/parseq_m5_fused_shapes.engine",
+    },
+    {
+        "id": "m5_fused_mha",
+        "label": "M5: Integer-Only PTQ + Shapes + MHA",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": False,
+        "onnx_path": "onnx/parseq_m5_fused_mha.onnx",
+        "engine_path": "trt/parseq_m5_fused_mha.engine",
+    },
+    {
+        "id": "m5_fused_mlp",
+        "label": "M5: Integer-Only PTQ + Shapes + MHA + MLP",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": False,
+        "onnx_path": "onnx/parseq_m5_fused_mlp.onnx",
+        "engine_path": "trt/parseq_m5_fused_mlp.engine",
+    },
+    {
         "id": "m5_fused_all",
         "label": "M5: Integer-Only PTQ (All Kernels Fused)",
         "variant": "m5",
@@ -115,29 +161,10 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m5_fused_all.onnx",
         "engine_path": "trt/parseq_m5_fused_all.engine",
     },
-    {
-        "id": "m5_int_fa",
-        "label": "M5: Integer-Only PTQ + INT-FlashAttention",
-        "variant": "m5",
-        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
-        "precision": "int8",
-        "fusion_level": "none",
-        "use_int_fa": True,
-        "onnx_path": "onnx/parseq_m5_int_fa.onnx",
-        "engine_path": "trt/parseq_m5_int_fa.engine",
-    },
-    {
-        "id": "m5_int_fa_fuse_all",
-        "label": "M5: Integer-Only PTQ + INT-Flash + All Fused",
-        "variant": "m5",
-        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
-        "precision": "int8",
-        "fusion_level": "all",
-        "use_int_fa": True,
-        "onnx_path": "onnx/parseq_m5_int_fa_fuse_all.onnx",
-        "engine_path": "trt/parseq_m5_int_fa_fuse_all_int8.engine",
-    },
-    # 6. Integer-Only QAT (M6) Variations
+
+    # =========================================================================
+    # 3. M6: Integer-Only QAT - Progressive Kernel Fusion (none -> shapes -> mha -> mlp -> all)
+    # =========================================================================
     {
         "id": "m6_nar_int8_io_qat",
         "label": "M6: Integer-Only QAT Baseline",
@@ -150,6 +177,39 @@ CONFIGURATIONS = [
         "engine_path": "trt/parseq_m6_nar_int8_io_qat.engine",
     },
     {
+        "id": "m6_fused_shapes",
+        "label": "M6: Integer-Only QAT + Shapes",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": False,
+        "onnx_path": "onnx/parseq_m6_fused_shapes.onnx",
+        "engine_path": "trt/parseq_m6_fused_shapes.engine",
+    },
+    {
+        "id": "m6_fused_mha",
+        "label": "M6: Integer-Only QAT + Shapes + MHA",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": False,
+        "onnx_path": "onnx/parseq_m6_fused_mha.onnx",
+        "engine_path": "trt/parseq_m6_fused_mha.engine",
+    },
+    {
+        "id": "m6_fused_mlp",
+        "label": "M6: Integer-Only QAT + Shapes + MHA + MLP",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": False,
+        "onnx_path": "onnx/parseq_m6_fused_mlp.onnx",
+        "engine_path": "trt/parseq_m6_fused_mlp.engine",
+    },
+    {
         "id": "m6_fused_all",
         "label": "M6: Integer-Only QAT (All Kernels Fused)",
         "variant": "m6",
@@ -160,6 +220,69 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m6_fused_all.onnx",
         "engine_path": "trt/parseq_m6_fused_all.engine",
     },
+
+    # =========================================================================
+    # 4. M5: Integer-Only PTQ + INT-FlashAttention (Progressive Fusion)
+    # =========================================================================
+    {
+        "id": "m5_int_fa",
+        "label": "M5: Integer-Only PTQ + INT-FlashAttention",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m5_int_fa.onnx",
+        "engine_path": "trt/parseq_m5_int_fa.engine",
+    },
+    {
+        "id": "m5_int_fa_fuse_shapes",
+        "label": "M5: Integer-Only PTQ + INT-Flash + Shapes",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m5_int_fa_fuse_shapes.onnx",
+        "engine_path": "trt/parseq_m5_int_fa_fuse_shapes.engine",
+    },
+    {
+        "id": "m5_int_fa_fuse_mha",
+        "label": "M5: Integer-Only PTQ + INT-Flash + Shapes + MHA",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m5_int_fa_fuse_mha.onnx",
+        "engine_path": "trt/parseq_m5_int_fa_fuse_mha.engine",
+    },
+    {
+        "id": "m5_int_fa_fuse_mlp",
+        "label": "M5: Integer-Only PTQ + INT-Flash + Shapes + MHA + MLP",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m5_int_fa_fuse_mlp.onnx",
+        "engine_path": "trt/parseq_m5_int_fa_fuse_mlp.engine",
+    },
+    {
+        "id": "m5_int_fa_fuse_all",
+        "label": "M5: Integer-Only PTQ + INT-Flash + All Fused",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m5_int_fa_fuse_all.onnx",
+        "engine_path": "trt/parseq_m5_int_fa_fuse_all_int8.engine",
+    },
+
+    # =========================================================================
+    # 5. M6: Integer-Only QAT + INT-FlashAttention (Progressive Fusion)
+    # =========================================================================
     {
         "id": "m6_int_fa",
         "label": "M6: Integer-Only QAT + INT-FlashAttention",
@@ -172,6 +295,39 @@ CONFIGURATIONS = [
         "engine_path": "trt/parseq_m6_int_fa.engine",
     },
     {
+        "id": "m6_int_fa_fuse_shapes",
+        "label": "M6: Integer-Only QAT + INT-Flash + Shapes",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m6_int_fa_fuse_shapes.onnx",
+        "engine_path": "trt/parseq_m6_int_fa_fuse_shapes.engine",
+    },
+    {
+        "id": "m6_int_fa_fuse_mha",
+        "label": "M6: Integer-Only QAT + INT-Flash + Shapes + MHA",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m6_int_fa_fuse_mha.onnx",
+        "engine_path": "trt/parseq_m6_int_fa_fuse_mha.engine",
+    },
+    {
+        "id": "m6_int_fa_fuse_mlp",
+        "label": "M6: Integer-Only QAT + INT-Flash + Shapes + MHA + MLP",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": True,
+        "onnx_path": "onnx/parseq_m6_int_fa_fuse_mlp.onnx",
+        "engine_path": "trt/parseq_m6_int_fa_fuse_mlp.engine",
+    },
+    {
         "id": "m6_int_fa_fuse_all",
         "label": "M6: Integer-Only QAT + INT-Flash + All Fused",
         "variant": "m6",
@@ -182,10 +338,308 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m6_int_fa_fuse_all.onnx",
         "engine_path": "trt/parseq_m6_int_fa_fuse_all.engine",
     },
-    # 7. Custom Plugin Fused Variants (IPluginV2DynamicExt / CUDA DP4A)
+
+    # =========================================================================
+    # 6. M5: SageAttention (Paper 2410.02367v9 - SAGEAttn-B & SAGEAttn-vB)
+    # =========================================================================
+    # Mode A: SAGEAttn-B (Float V) Progressive Fusion
+    {
+        "id": "m5_sage_b",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-B)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m5_sage_b.onnx",
+        "engine_path": "trt/parseq_m5_sage_b.engine",
+    },
+    {
+        "id": "m5_sage_b_fuse_shapes",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-B) + Shapes",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m5_sage_b_fuse_shapes.onnx",
+        "engine_path": "trt/parseq_m5_sage_b_fuse_shapes.engine",
+    },
+    {
+        "id": "m5_sage_b_fuse_mha",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-B) + Shapes + MHA",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m5_sage_b_fuse_mha.onnx",
+        "engine_path": "trt/parseq_m5_sage_b_fuse_mha.engine",
+    },
+    {
+        "id": "m5_sage_b_fuse_mlp",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-B) + Shapes + MHA + MLP",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m5_sage_b_fuse_mlp.onnx",
+        "engine_path": "trt/parseq_m5_sage_b_fuse_mlp.engine",
+    },
+    {
+        "id": "m5_sage_b_fuse_all",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-B) + All Fused",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m5_sage_b_fuse_all.onnx",
+        "engine_path": "trt/parseq_m5_sage_b_fuse_all.engine",
+    },
+    # Mode B: SAGEAttn-vB (Fully INT8 with per-channel V quantization) Progressive Fusion
+    {
+        "id": "m5_sage_vb",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-vB Fully INT8)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m5_sage_vb.onnx",
+        "engine_path": "trt/parseq_m5_sage_vb.engine",
+    },
+    {
+        "id": "m5_sage_vb_fuse_shapes",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-vB) + Shapes",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m5_sage_vb_fuse_shapes.onnx",
+        "engine_path": "trt/parseq_m5_sage_vb_fuse_shapes.engine",
+    },
+    {
+        "id": "m5_sage_vb_fuse_mha",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-vB) + Shapes + MHA",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m5_sage_vb_fuse_mha.onnx",
+        "engine_path": "trt/parseq_m5_sage_vb_fuse_mha.engine",
+    },
+    {
+        "id": "m5_sage_vb_fuse_mlp",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-vB) + Shapes + MHA + MLP",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m5_sage_vb_fuse_mlp.onnx",
+        "engine_path": "trt/parseq_m5_sage_vb_fuse_mlp.engine",
+    },
+    {
+        "id": "m5_sage_vb_fuse_all",
+        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-vB) + All Fused",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m5_sage_vb_fuse_all.onnx",
+        "engine_path": "trt/parseq_m5_sage_vb_fuse_all.engine",
+    },
+
+    # =========================================================================
+    # 7. M6: SageAttention (QAT - SAGEAttn-B & SAGEAttn-vB)
+    # =========================================================================
+    # Mode A: SAGEAttn-B (Float V) Progressive Fusion
+    {
+        "id": "m6_sage_b",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-B)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m6_sage_b.onnx",
+        "engine_path": "trt/parseq_m6_sage_b.engine",
+    },
+    {
+        "id": "m6_sage_b_fuse_shapes",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-B) + Shapes",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m6_sage_b_fuse_shapes.onnx",
+        "engine_path": "trt/parseq_m6_sage_b_fuse_shapes.engine",
+    },
+    {
+        "id": "m6_sage_b_fuse_mha",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-B) + Shapes + MHA",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m6_sage_b_fuse_mha.onnx",
+        "engine_path": "trt/parseq_m6_sage_b_fuse_mha.engine",
+    },
+    {
+        "id": "m6_sage_b_fuse_mlp",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-B) + Shapes + MHA + MLP",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m6_sage_b_fuse_mlp.onnx",
+        "engine_path": "trt/parseq_m6_sage_b_fuse_mlp.engine",
+    },
+    {
+        "id": "m6_sage_b_fuse_all",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-B) + All Fused",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "onnx_path": "onnx/parseq_m6_sage_b_fuse_all.onnx",
+        "engine_path": "trt/parseq_m6_sage_b_fuse_all.engine",
+    },
+    # Mode B: SAGEAttn-vB (Fully INT8) Progressive Fusion
+    {
+        "id": "m6_sage_vb",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-vB Fully INT8)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m6_sage_vb.onnx",
+        "engine_path": "trt/parseq_m6_sage_vb.engine",
+    },
+    {
+        "id": "m6_sage_vb_fuse_shapes",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-vB) + Shapes",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "shapes",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m6_sage_vb_fuse_shapes.onnx",
+        "engine_path": "trt/parseq_m6_sage_vb_fuse_shapes.engine",
+    },
+    {
+        "id": "m6_sage_vb_fuse_mha",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-vB) + Shapes + MHA",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mha",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m6_sage_vb_fuse_mha.onnx",
+        "engine_path": "trt/parseq_m6_sage_vb_fuse_mha.engine",
+    },
+    {
+        "id": "m6_sage_vb_fuse_mlp",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-vB) + Shapes + MHA + MLP",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "mlp",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m6_sage_vb_fuse_mlp.onnx",
+        "engine_path": "trt/parseq_m6_sage_vb_fuse_mlp.engine",
+    },
+    {
+        "id": "m6_sage_vb_fuse_all",
+        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-vB) + All Fused",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "onnx_path": "onnx/parseq_m6_sage_vb_fuse_all.onnx",
+        "engine_path": "trt/parseq_m6_sage_vb_fuse_all.engine",
+    },
+
+    # =========================================================================
+    # 8. Custom Plugin Fused Variants (IPluginV2DynamicExt / CUDA DP4A)
+    # =========================================================================
+    # INT-FlashAttention Plugin
+    {
+        "id": "m5_int_fa_plugin",
+        "label": "M5: Integer-Only PTQ + INT-Flash Plugin",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m5_int_fa_plugin.onnx",
+        "engine_path": "trt/parseq_m5_int_fa_plugin.engine",
+    },
     {
         "id": "m5_int_fa_plugin_fused",
-        "label": "M5: Integer-Only PTQ + INT-Flash Plugin (Fused)",
+        "label": "M5: Integer-Only PTQ + INT-Flash Plugin (All Fused)",
         "variant": "m5",
         "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
         "precision": "int8",
@@ -196,8 +650,20 @@ CONFIGURATIONS = [
         "engine_path": "trt/parseq_m5_int_fa_plugin_fused.engine",
     },
     {
+        "id": "m6_int_fa_plugin",
+        "label": "M6: Integer-Only QAT + INT-Flash Plugin",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m6_int_fa_plugin.onnx",
+        "engine_path": "trt/parseq_m6_int_fa_plugin.engine",
+    },
+    {
         "id": "m6_int_fa_plugin_fused",
-        "label": "M6: Integer-Only QAT + INT-Flash Plugin (Fused)",
+        "label": "M6: Integer-Only QAT + INT-Flash Plugin (All Fused)",
         "variant": "m6",
         "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
         "precision": "int8",
@@ -207,6 +673,66 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m6_int_fa_plugin_fused.onnx",
         "engine_path": "trt/parseq_m6_int_fa_plugin_fused.engine",
     },
+    # SageAttention Plugins
+    {
+        "id": "m5_sage_b_plugin_fused",
+        "label": "M5: Integer-Only PTQ + SageAttention Plugin (SAGEAttn-B, Fused)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m5_sage_b_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m5_sage_b_plugin_fused.engine",
+    },
+    {
+        "id": "m5_sage_vb_plugin_fused",
+        "label": "M5: Integer-Only PTQ + SageAttention Plugin (SAGEAttn-vB, Fused)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m5_sage_vb_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m5_sage_vb_plugin_fused.engine",
+    },
+    {
+        "id": "m6_sage_b_plugin_fused",
+        "label": "M6: Integer-Only QAT + SageAttention Plugin (SAGEAttn-B, Fused)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_b",
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m6_sage_b_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m6_sage_b_plugin_fused.engine",
+    },
+    {
+        "id": "m6_sage_vb_plugin_fused",
+        "label": "M6: Integer-Only QAT + SageAttention Plugin (SAGEAttn-vB, Fused)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "use_sage": True,
+        "sage_mode": "sageattn_vb",
+        "v_quant_mode": "per_channel",
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m6_sage_vb_plugin_fused.onnx",
+        "engine_path": "trt/parseq_m6_sage_vb_plugin_fused.engine",
+    },
+    # All Custom Plugins (FA + LN + GELU + Softmax)
     {
         "id": "m5_plugin_all",
         "label": "M5: Integer-Only PTQ + All Custom Plugins (FA+LN+GELU)",
@@ -220,6 +746,18 @@ CONFIGURATIONS = [
         "engine_path": "trt/parseq_m5_plugin_all.engine",
     },
     {
+        "id": "m5_plugin_all_fused",
+        "label": "M5: Integer-Only PTQ + All Custom Plugins (All Fused)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m5_plugin_all_fused.onnx",
+        "engine_path": "trt/parseq_m5_plugin_all_fused.engine",
+    },
+    {
         "id": "m6_plugin_all",
         "label": "M6: Integer-Only QAT + All Custom Plugins (FA+LN+GELU)",
         "variant": "m6",
@@ -231,65 +769,146 @@ CONFIGURATIONS = [
         "onnx_path": "onnx/parseq_m6_plugin_all.onnx",
         "engine_path": "trt/parseq_m6_plugin_all.engine",
     },
-    # 8. SageAttention Variants (Paper 2410.02367: Key Smoothing + INT8 Attention)
     {
-        "id": "m5_sage_attn",
-        "label": "M5: Integer-Only PTQ + SageAttention (SAGEAttn-B)",
+        "id": "m6_plugin_all_fused",
+        "label": "M6: Integer-Only QAT + All Custom Plugins (All Fused)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": True,
+        "use_plugin": True,
+        "onnx_path": "onnx/parseq_m6_plugin_all_fused.onnx",
+        "engine_path": "trt/parseq_m6_plugin_all_fused.engine",
+    },
+
+    # =========================================================================
+    # 9. Alternative Integer Nonlinear Operators (IViT Shiftmax & I-BERT)
+    # =========================================================================
+    {
+        "id": "m5_ivit_approx",
+        "label": "M5: Integer-Only PTQ + IViT Approximations (Shiftmax/IViTGELU)",
         "variant": "m5",
         "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
         "precision": "int8",
         "fusion_level": "none",
         "use_int_fa": False,
-        "use_sage": True,
-        "sage_mode": "sageattn_b",
-        "onnx_path": "onnx/parseq_m5_sage.onnx",
-        "engine_path": "trt/parseq_m5_sage_int8.engine",
+        "gelu_candidate": "gelu_ivit",
+        "softmax_candidate": "softmax_ivit",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m5_ivit.onnx",
+        "engine_path": "trt/parseq_m5_ivit.engine",
     },
     {
-        "id": "m6_sage_attn",
-        "label": "M6: Integer-Only QAT + SageAttention (SAGEAttn-B)",
-        "variant": "m6",
-        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
-        "precision": "int8",
-        "fusion_level": "none",
-        "use_int_fa": False,
-        "use_sage": True,
-        "sage_mode": "sageattn_b",
-        "onnx_path": "onnx/parseq_m6_sage.onnx",
-        "engine_path": "trt/parseq_m6_sage.engine",
-    },
-    {
-        "id": "m5_sage_plugin_fused",
-        "label": "M5: Integer-Only PTQ + SageAttention Plugin (Fused)",
+        "id": "m5_ivit_approx_fused",
+        "label": "M5: Integer-Only PTQ + IViT Approximations (All Fused)",
         "variant": "m5",
         "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
         "precision": "int8",
         "fusion_level": "all",
         "use_int_fa": False,
-        "use_sage": True,
-        "sage_mode": "sageattn_b",
-        "use_plugin": True,
-        "onnx_path": "onnx/parseq_m5_sage_plugin_fused.onnx",
-        "engine_path": "trt/parseq_m5_sage_plugin_fused.engine",
+        "gelu_candidate": "gelu_ivit",
+        "softmax_candidate": "softmax_ivit",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m5_ivit_fused.onnx",
+        "engine_path": "trt/parseq_m5_ivit_fused.engine",
     },
     {
-        "id": "m6_sage_plugin_fused",
-        "label": "M6: Integer-Only QAT + SageAttention Plugin (Fused)",
+        "id": "m5_ibert_approx",
+        "label": "M5: Integer-Only PTQ + I-BERT Approximations",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "gelu_candidate": "gelu_ibert",
+        "softmax_candidate": "softmax_ibert",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m5_ibert.onnx",
+        "engine_path": "trt/parseq_m5_ibert.engine",
+    },
+    {
+        "id": "m5_ibert_approx_fused",
+        "label": "M5: Integer-Only PTQ + I-BERT Approximations (All Fused)",
+        "variant": "m5",
+        "ckpt": "pretrained/parseq_alpr_98.5.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "gelu_candidate": "gelu_ibert",
+        "softmax_candidate": "softmax_ibert",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m5_ibert_fused.onnx",
+        "engine_path": "trt/parseq_m5_ibert_fused.engine",
+    },
+    {
+        "id": "m6_ivit_approx",
+        "label": "M6: Integer-Only QAT + IViT Approximations (Shiftmax/IViTGELU)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "gelu_candidate": "gelu_ivit",
+        "softmax_candidate": "softmax_ivit",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m6_ivit.onnx",
+        "engine_path": "trt/parseq_m6_ivit.engine",
+    },
+    {
+        "id": "m6_ivit_approx_fused",
+        "label": "M6: Integer-Only QAT + IViT Approximations (All Fused)",
         "variant": "m6",
         "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
         "precision": "int8",
         "fusion_level": "all",
         "use_int_fa": False,
-        "use_sage": True,
-        "sage_mode": "sageattn_b",
-        "use_plugin": True,
-        "onnx_path": "onnx/parseq_m6_sage_plugin_fused.onnx",
-        "engine_path": "trt/parseq_m6_sage_plugin_fused.engine",
+        "gelu_candidate": "gelu_ivit",
+        "softmax_candidate": "softmax_ivit",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m6_ivit_fused.onnx",
+        "engine_path": "trt/parseq_m6_ivit_fused.engine",
+    },
+    {
+        "id": "m6_ibert_approx",
+        "label": "M6: Integer-Only QAT + I-BERT Approximations",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "none",
+        "use_int_fa": False,
+        "gelu_candidate": "gelu_ibert",
+        "softmax_candidate": "softmax_ibert",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m6_ibert.onnx",
+        "engine_path": "trt/parseq_m6_ibert.engine",
+    },
+    {
+        "id": "m6_ibert_approx_fused",
+        "label": "M6: Integer-Only QAT + I-BERT Approximations (All Fused)",
+        "variant": "m6",
+        "ckpt": "pretrained/parseq_alpr_qat_m6.ckpt",
+        "precision": "int8",
+        "fusion_level": "all",
+        "use_int_fa": False,
+        "gelu_candidate": "gelu_ibert",
+        "softmax_candidate": "softmax_ibert",
+        "layernorm_candidate": "layernorm_ibert",
+        "onnx_path": "onnx/parseq_m6_ibert_fused.onnx",
+        "engine_path": "trt/parseq_m6_ibert_fused.engine",
     },
 ]
 
 
-def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoint="pretrained/parseq_alpr_98.5.ckpt", batch_size = 64, num_workers = 0, workspace_gb: float = 4.0) -> Dict[str, Any]:
+def run_full_pipeline(
+    max_eval_samples: int = 50,
+    force: bool = False,
+    checkpoint: str = "pretrained/parseq_alpr_98.5.ckpt",
+    batch_size: int = 64,
+    num_workers: int = 0,
+    workspace_gb: float = 4.0,
+    config_filter: Optional[str] = None,
+) -> Dict[str, Any]:
     os.makedirs("onnx", exist_ok=True)
     os.makedirs("trt", exist_ok=True)
     os.makedirs("results", exist_ok=True)
@@ -316,14 +935,41 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
     if not batch_sizes:
         batch_sizes = [1]
 
+    active_configs = CONFIGURATIONS
+    if config_filter:
+        flt = config_filter.lower().strip()
+        active_configs = [c for c in CONFIGURATIONS if flt in c["id"].lower() or flt in c["label"].lower()]
+        print(f"Filter '{config_filter}' applied: {len(active_configs)}/{len(CONFIGURATIONS)} configurations selected.")
+        if not active_configs:
+            print(f"Warning: No configurations matched filter '{config_filter}'.")
+            return []
+
     print("=" * 80)
-    print(f"STARTING FULL MATRIX EXECUTION: {len(CONFIGURATIONS)} CONFIGURATIONS (Batches: {batch_sizes})")
+    print(f"STARTING FULL MATRIX EXECUTION: {len(active_configs)} CONFIGURATIONS (Batches: {batch_sizes})")
     print("=" * 80)
 
-    for idx, cfg in enumerate(CONFIGURATIONS, 1):
-        print(f"\n[{idx}/{len(CONFIGURATIONS)}] Processing: {cfg['label']}")
+    for idx, cfg in enumerate(active_configs, 1):
+        print(f"\n[{idx}/{len(active_configs)}] Processing: {cfg['label']}")
         print(f"      ONNX:   {cfg['onnx_path']}")
         print(f"      Engine: {cfg['engine_path']}")
+
+        # Determine descriptive attention / operator type
+        if cfg.get("use_plugin") and "plugin_all" in cfg["id"]:
+            attn_type = "Custom Plugins (All: FA+LN+GELU)"
+        elif cfg.get("use_plugin") and cfg.get("use_sage"):
+            attn_type = f"SagePlugin ({'vB' if cfg.get('sage_mode') == 'sageattn_vb' else 'B'})"
+        elif cfg.get("use_plugin") and cfg.get("use_int_fa"):
+            attn_type = "INT-Flash Plugin"
+        elif cfg.get("use_sage"):
+            attn_type = f"SageAttn ({'vB' if cfg.get('sage_mode') == 'sageattn_vb' else 'B'})"
+        elif cfg.get("use_int_fa"):
+            attn_type = "INT-Flash"
+        elif "ivit" in cfg["id"]:
+            attn_type = "IViT Shiftmax"
+        elif "ibert" in cfg["id"]:
+            attn_type = "I-BERT Softmax"
+        else:
+            attn_type = "Padrão"
 
         record = {
             "id": cfg["id"],
@@ -331,8 +977,11 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
             "variant": cfg["variant"],
             "precision": cfg["precision"],
             "fusion": cfg["fusion_level"],
+            "attn_type": attn_type,
             "int_fa": cfg.get("use_int_fa", False),
             "sage_attn": cfg.get("use_sage", False),
+            "sage_mode": cfg.get("sage_mode", "none"),
+            "use_plugin": cfg.get("use_plugin", False),
             "onnx_size_mb": None,
             "engine_size_mb": None,
             "latency_b1_mean": None,
@@ -367,6 +1016,10 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
                     use_int_flashattention=cfg.get("use_int_fa", False),
                     use_sage_attention=cfg.get("use_sage", False),
                     sage_mode=cfg.get("sage_mode", "sageattn_b"),
+                    v_quant_mode=cfg.get("v_quant_mode", "per_tensor"),
+                    gelu_candidate=cfg.get("gelu_candidate", "gelu_iptq"),
+                    softmax_candidate=cfg.get("softmax_candidate", "softmax_iptq"),
+                    layernorm_candidate=cfg.get("layernorm_candidate", "layernorm_ibert"),
                     use_plugin=cfg.get("use_plugin", False),
                 )
             record["onnx_size_mb"] = round(os.path.getsize(cfg["onnx_path"]) / (1024 * 1024), 2)
@@ -461,18 +1114,16 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
     report_md_path = "results/full_matrix_benchmark_report.md"
     with open(report_md_path, "w", encoding="utf-8") as f:
         f.write("# Relatório Comparativo Completo: Matriz de Variantes PARSeq\n\n")
-        batch_headers = " | ".join([f"Latência B{b} (ms) | FPS B{b}" for b in batch_sizes])
-        f.write(
-            f"| Variante | Precisão | Fusão | Atenção | Engine (MB) | {batch_headers} | Maior FPS (Batch) | Acurácia Placa (%) | NED (%) | Status |\n"
-        )
-        batch_separators = "|---|---" * len(batch_sizes)
-        f.write(f"|---|---|---|---|---|{batch_separators}|---|---|---|---|\n")
+        headers = ["ID", "Variante", "Precisão", "Fusão", "Atenção / Operador", "Engine (MB)"]
+        for b in batch_sizes:
+            headers.extend([f"Latência B{b} (ms)", f"FPS B{b}"])
+        headers.extend(["Maior FPS (Batch)", "Acurácia Placa (%)", "NED (%)", "Status"])
+
+        f.write("| " + " | ".join(headers) + " |\n")
+        f.write("| " + " | ".join(["---"] * len(headers)) + " |\n")
+
         for r in summary_records:
-            attn_type = "SageAttn" if r.get("sage_attn") else ("INT-Flash" if r.get("int_fa") else "Padrão")
-            batch_cols = " | ".join([
-                f"{r.get(f'latency_b{b}_mean', '-')} | {r.get(f'fps_b{b}', '-')}"
-                for b in batch_sizes
-            ])
+            attn_type = r.get("attn_type", "Padrão")
             max_fps_str = (
                 f"{r['max_fps']} (B{r['max_fps_batch']})"
                 if r.get("max_fps") is not None
@@ -480,11 +1131,21 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
             )
             acc_str = f"{r['exact_acc']}%" if r.get("exact_acc") is not None else "-"
             ned_str = f"{r['ned']}%" if r.get("ned") is not None else "-"
-            f.write(
-                f"| {r['label']} | {r['precision'].upper()} | {r['fusion']} | {attn_type} | "
-                f"{r.get('engine_size_mb', '-')} | {batch_cols} | {max_fps_str} | "
-                f"{acc_str} | {ned_str} | {r.get('status', '-')} |\n"
-            )
+
+            row = [
+                f"`{r['id']}`",
+                str(r["label"]),
+                str(r["precision"].upper()),
+                str(r["fusion"]),
+                str(attn_type),
+                str(r.get("engine_size_mb", "-")),
+            ]
+            for b in batch_sizes:
+                row.append(str(r.get(f"latency_b{b}_mean", "-")))
+                row.append(str(r.get(f"fps_b{b}", "-")))
+            row.extend([max_fps_str, acc_str, ned_str, str(r.get("status", "-"))])
+
+            f.write("| " + " | ".join(row) + " |\n")
 
     print("\n" + "=" * 80)
     print("ALL PIPELINE STAGES COMPLETED!")
@@ -502,8 +1163,17 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=0, help="Number of DataLoader workers")
     parser.add_argument("--samples", type=int, default=50, help="Number of ALPR samples to evaluate")
     parser.add_argument("--workspace_gb", type=float, default=4.0, help="Workspace memory limit in GB for TensorRT builder")
+    parser.add_argument("--filter", type=str, default=None, help="Filter configurations by substring matching id or label")
     parser.add_argument("--force", action="store_true", help="Force re-export and rebuild of all engines")
     args = parser.parse_args()
 
     ckpt = args.pos_checkpoint if args.pos_checkpoint is not None else args.checkpoint
-    run_full_pipeline(max_eval_samples=args.samples, force=args.force, checkpoint=ckpt, batch_size=args.batch_size, num_workers=args.num_workers, workspace_gb=args.workspace_gb)
+    run_full_pipeline(
+        max_eval_samples=args.samples,
+        force=args.force,
+        checkpoint=ckpt,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        workspace_gb=args.workspace_gb,
+        config_filter=args.filter,
+    )

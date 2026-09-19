@@ -100,6 +100,10 @@ def export_onnx(
     use_int_flashattention: bool = False,
     use_sage_attention: bool = False,
     sage_mode: str = "sageattn_b",
+    v_quant_mode: str = "per_tensor",
+    gelu_candidate: str = "gelu_iptq",
+    softmax_candidate: str = "softmax_iptq",
+    layernorm_candidate: str = "layernorm_ibert",
     use_plugin: bool = False,
 ) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -114,13 +118,16 @@ def export_onnx(
 
     calib_file = "results/calibration/calibration_stats.json"
     is_already_quant = any(isinstance(m, QuantizedLinear) for m in system.modules())
-    has_custom_fusion = (fuse_mha or fuse_mlp or fuse_layernorm or use_int_flashattention or use_sage_attention or use_plugin)
+    has_custom_fusion = (fuse_mha or fuse_mlp or fuse_layernorm or use_int_flashattention or use_sage_attention or use_plugin or gelu_candidate != "gelu_iptq" or softmax_candidate != "softmax_iptq" or layernorm_candidate != "layernorm_ibert")
     if is_already_quant and variant == "m6" and not has_custom_fusion:
         model = copy.deepcopy(system.model).eval().to(device)
     else:
         model = create_model_variant(
             variant,
             system.model,
+            gelu_candidate=gelu_candidate,
+            softmax_candidate=softmax_candidate,
+            layernorm_candidate=layernorm_candidate,
             calibration_file=calib_file if os.path.exists(calib_file) else None,
             fuse_mha=fuse_mha,
             fuse_mlp=fuse_mlp,
@@ -128,6 +135,7 @@ def export_onnx(
             use_int_flashattention=use_int_flashattention,
             use_sage_attention=use_sage_attention,
             sage_mode=sage_mode,
+            v_quant_mode=v_quant_mode,
             use_plugin=use_plugin,
         ).eval().to(device)
 
