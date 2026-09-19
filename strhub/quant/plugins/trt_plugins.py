@@ -47,7 +47,7 @@ class INTFlashAttentionPluginOp(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g, q, k, v, scale):
-        return g.op("INTFlashAttentionPlugin", q, k, v, scale_f=float(scale))
+        return g.op("trt.plugins::INTFlashAttentionPlugin", q, k, v, scale_f=float(scale))
 
 
 class SageAttentionPluginOp(torch.autograd.Function):
@@ -75,7 +75,7 @@ class SageAttentionPluginOp(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g, q, k, v, scale, mode=0):
-        return g.op("SageAttentionPlugin", q, k, v, scale_f=float(scale), mode_i=int(mode))
+        return g.op("trt.plugins::SageAttentionPlugin", q, k, v, scale_f=float(scale), mode_i=int(mode))
 
 
 class IntegerLayerNormPluginOp(torch.autograd.Function):
@@ -107,7 +107,7 @@ class IntegerLayerNormPluginOp(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g, x, eps=1e-5):
-        return g.op("IntegerLayerNormPlugin", x, eps_f=float(eps))
+        return g.op("trt.plugins::IntegerLayerNormPlugin", x, eps_f=float(eps))
 
 
 class IntegerGELUPluginOp(torch.autograd.Function):
@@ -134,7 +134,7 @@ class IntegerGELUPluginOp(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g, x):
-        return g.op("IntegerGELUPlugin", x)
+        return g.op("trt.plugins::IntegerGELUPlugin", x)
 
 
 class IntegerSoftmaxPluginOp(torch.autograd.Function):
@@ -165,7 +165,7 @@ class IntegerSoftmaxPluginOp(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g, x):
-        return g.op("IntegerSoftmaxPlugin", x)
+        return g.op("trt.plugins::IntegerSoftmaxPlugin", x)
 
 
 # ==============================================================================
@@ -626,18 +626,23 @@ def register_parseq_plugins():
     registry = trt.get_plugin_registry()
     existing_creators = {c.name for c in registry.all_creators}
 
-    creators = [
-        INTFlashAttentionPluginCreator(),
-        SageAttentionPluginCreator(),
-        IntegerLayerNormPluginCreator(),
-        IntegerGELUPluginCreator(),
-        IntegerSoftmaxPluginCreator(),
+    creator_classes = [
+        INTFlashAttentionPluginCreator,
+        SageAttentionPluginCreator,
+        IntegerLayerNormPluginCreator,
+        IntegerGELUPluginCreator,
+        IntegerSoftmaxPluginCreator,
     ]
 
-    for creator in creators:
-        if creator.name not in existing_creators:
-            success = registry.register_creator(creator, "")
-            if success:
-                print(f"[TRT Plugins] Registered creator: {creator.name} v{creator.plugin_version}")
+    for cls in creator_classes:
+        for ns in ["", "trt.plugins"]:
+            try:
+                creator = cls()
+                creator.plugin_namespace = ns
+                registry.register_creator(creator, ns)
+            except Exception:
+                pass
+        dummy = cls()
+        print(f"[TRT Plugins] Registered creator: {dummy.name} v{dummy.plugin_version}")
 
     _REGISTERED = True

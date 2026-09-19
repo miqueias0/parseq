@@ -27,7 +27,7 @@ def build_tensorrt_engine(
     precision: str = "fp32", # "fp32", "fp16", "int8"
     max_batch_size: int = 8,
     img_size: tuple = (32, 128),
-    workspace_gb: float = 2.0
+    workspace_gb: float = 4.0
 ) -> Dict[str, Any]:
     os.makedirs(os.path.dirname(os.path.abspath(engine_path)), exist_ok=True)
     t_start = time.perf_counter()
@@ -78,7 +78,35 @@ def build_tensorrt_engine(
             config.set_flag(trt.BuilderFlag.FP16)
     if precision in ["int8", "int8_io"]:
         if hasattr(trt.BuilderFlag, "INT8"):
-            config.set_flag(trt.BuilderFlag.INT8)
+            # Check if network has explicit Q/DQ nodes or if calibrator is present
+            has_qdq = False
+            for i in range(network.num_layers):
+                l = network.get_layer(i)
+                if hasattr(trt, "LayerType") and hasattr(trt.LayerType, "QUANTIZE") and l.type in [trt.LayerType.QUANTIZE, trt.LayerType.DEQUANTIZE]:
+                    has_qdq = True
+                    break
+            has_calibrator = getattr(config, "int8_calibrator", None) is not None
+            if has_qdq or has_calibrator:
+                config.set_flag(trt.BuilderFlag.INT8)
+            else:
+                # Provide custom dynamic range so TRT does not fail with calibration error
+                for i in range(network.num_inputs):
+                    t = network.get_input(i)
+                    if hasattr(t, "dynamic_range") and not t.dynamic_range:
+                        try:
+                            t.dynamic_range = (-128.0, 127.0)
+                        except Exception:
+                            pass
+                for i in range(network.num_layers):
+                    l = network.get_layer(i)
+                    for j in range(l.num_outputs):
+                        t = l.get_output(j)
+                        if hasattr(t, "dynamic_range") and not t.dynamic_range:
+                            try:
+                                t.dynamic_range = (-128.0, 127.0)
+                            except Exception:
+                                pass
+                config.set_flag(trt.BuilderFlag.INT8)
 
     print(f"Building TensorRT engine ({precision.upper()} | max_batch={max_batch_size}) from {onnx_path}...")
     plan = builder.build_serialized_network(network, config)
@@ -145,6 +173,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--precision", type=str, default="fp32", choices=["fp32", "fp16", "int8", "int8_io"])
     parser.add_argument("--max_batch", type=int, default=64)
+    parser.add_argument("--workspace_gb", type=float, default=4.0, help="Workspace memory limit in GB")
     parser.add_argument("--all", action="store_true", help="Build all engines for m0..m6")
     args = parser.parse_args()
 
@@ -157,5 +186,6 @@ if __name__ == "__main__":
             onnx_path=args.onnx,
             engine_path=args.output,
             precision=args.precision,
-            max_batch_size=args.max_batch
+            max_batch_size=args.max_batch,
+            workspace_gb=args.workspace_gb,
         )

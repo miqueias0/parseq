@@ -81,6 +81,7 @@ class QuantizedLinear(nn.Module):
                 self.weight = nn.Parameter(q_w, requires_grad=requires_grad)
                 self.weight_scale.fill_(1.0)
                 self.weight_scale_1d = torch.tensor([1.0], dtype=torch.float32)
+                self.act_scale = torch.tensor([1.0], dtype=torch.float32)
                 self.calibrated = True
             elif mode in ["conventional_ptq", "integer_only", "qat"]:
                 if channel_wise_weight and w_data.dim() >= 2:
@@ -121,7 +122,7 @@ class QuantizedLinear(nn.Module):
         self.calibrated = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if (getattr(self, "export_qdq", False) or QuantizedLinear.global_export_qdq) and self.mode in ["conventional_ptq", "integer_only", "qat"]:
+        if (getattr(self, "export_qdq", False) or QuantizedLinear.global_export_qdq) and self.mode in ["naive", "conventional_ptq", "integer_only", "qat"]:
             w_q = ONNXQDQ.apply(self.weight, self.weight_scale_1d, 0)
             s_act = self.act_scale.squeeze()
             x_q = ONNXQDQ.apply(x, s_act, 1)

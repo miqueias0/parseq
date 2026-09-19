@@ -91,7 +91,7 @@ def export_onnx(
     output_path: str = "onnx/parseq_nar.onnx",
     batch_size: int = 1,
     img_size: tuple = (32, 128),
-    opset_version: int = 18,
+    opset_version: int = 17,
     dynamic_batch: bool = True,
     fuse_shapes: bool = False,
     fuse_mha: bool = False,
@@ -109,8 +109,8 @@ def export_onnx(
     variant = variant.lower().strip()
 
     from strhub.models.parseq.quantized_parseq import QuantizedLinear
-    # Enable explicit Q/DQ export for quantized variants
-    QuantizedLinear.global_export_qdq = (variant in ["m4", "m5", "m6"])
+    # Enable explicit Q/DQ export for quantized variants (including M3 naive negative control)
+    QuantizedLinear.global_export_qdq = (variant in ["m3", "m4", "m5", "m6"])
 
     calib_file = "results/calibration/calibration_stats.json"
     is_already_quant = any(isinstance(m, QuantizedLinear) for m in system.modules())
@@ -166,18 +166,27 @@ def export_onnx(
             "logits": {0: "batch_size"},
         }
 
+    custom_opsets = {"trt.plugins": 1} if use_plugin else None
     print(f"Exporting variant {variant.upper()} to ONNX (opset {opset_version}, Q/DQ={QuantizedLinear.global_export_qdq})...")
+    export_kwargs = {
+        "export_params": True,
+        "opset_version": opset_version,
+        "do_constant_folding": True,
+        "input_names": ["images"],
+        "output_names": ["logits"],
+        "dynamic_axes": dynamic_axes,
+    }
+    if custom_opsets:
+        export_kwargs["custom_opsets"] = custom_opsets
+    import inspect
+    if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+        export_kwargs["dynamo"] = False
+
     torch.onnx.export(
         wrapper,
         dummy_input,
         output_path,
-        export_params=True,
-        opset_version=opset_version,
-        do_constant_folding=True,
-        input_names=["images"],
-        output_names=["logits"],
-        dynamic_axes=dynamic_axes,
-        # dynamo=False
+        **export_kwargs
     )
 
     # Reset global_export_qdq flag
@@ -228,7 +237,7 @@ def export_onnx(
 
 def export_all_variants(
     checkpoint_path: str = "pretrained/parseq_alpr_98.5.ckpt",
-    opset: int = 18,
+    opset: int = 17,
     fuse_shapes: bool = False,
     fuse_mha: bool = False,
     fuse_mlp: bool = False,
@@ -286,7 +295,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default="pretrained/parseq_alpr_98.5.ckpt")
     parser.add_argument("--variant", type=str, default="m1", choices=["m0", "m1", "m2", "m3", "m4", "m5", "m6"])
     parser.add_argument("--output", type=str, default="onnx/parseq_nar.onnx")
-    parser.add_argument("--opset", type=int, default=18)
+    parser.add_argument("--opset", type=int, default=17)
     parser.add_argument("--all", action="store_true", help="Export all variants m0..m6")
     parser.add_argument("--fuse_shapes", action="store_true", help="Fuse redundant shape, reshape, cast and gather nodes via ONNX Simplifier")
     parser.add_argument("--fuse_mha", action="store_true", help="Emit canonical Softmax pattern allowing TensorRT FlashAttention/FMHA kernel fusion")

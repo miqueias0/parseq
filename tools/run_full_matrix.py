@@ -289,7 +289,7 @@ CONFIGURATIONS = [
 ]
 
 
-def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoint="pretrained/parseq_alpr_98.5.ckpt", batch_size = 64, num_workers = 0) -> Dict[str, Any]:
+def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoint="pretrained/parseq_alpr_98.5.ckpt", batch_size = 64, num_workers = 0, workspace_gb: float = 4.0) -> Dict[str, Any]:
     os.makedirs("onnx", exist_ok=True)
     os.makedirs("trt", exist_ok=True)
     os.makedirs("results", exist_ok=True)
@@ -359,7 +359,7 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
                     checkpoint_path=cfg["ckpt"],
                     variant=cfg["variant"],
                     output_path=cfg["onnx_path"],
-                    opset_version=18,
+                    opset_version=17,
                     fuse_shapes=fuse_shapes,
                     fuse_mha=fuse_mha,
                     fuse_mlp=fuse_mlp,
@@ -386,6 +386,7 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
                     engine_path=cfg["engine_path"],
                     precision=cfg["precision"],
                     max_batch_size=batch_size,
+                    workspace_gb=workspace_gb,
                 )
             record["engine_size_mb"] = round(os.path.getsize(cfg["engine_path"]) / (1024 * 1024), 2)
             print(f"   ✓ Engine ready ({record['engine_size_mb']} MB)")
@@ -500,8 +501,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64, help="Maximum batch size for engine compilation and benchmarking (powers of 2: 1, 2, 4, ...)")
     parser.add_argument("--num_workers", type=int, default=0, help="Number of DataLoader workers")
     parser.add_argument("--samples", type=int, default=50, help="Number of ALPR samples to evaluate")
+    parser.add_argument("--workspace_gb", type=float, default=4.0, help="Workspace memory limit in GB for TensorRT builder")
     parser.add_argument("--force", action="store_true", help="Force re-export and rebuild of all engines")
     args = parser.parse_args()
 
     ckpt = args.pos_checkpoint if args.pos_checkpoint is not None else args.checkpoint
-    run_full_pipeline(max_eval_samples=args.samples, force=args.force, checkpoint=ckpt, batch_size=args.batch_size, num_workers=args.num_workers)
+    run_full_pipeline(max_eval_samples=args.samples, force=args.force, checkpoint=ckpt, batch_size=args.batch_size, num_workers=args.num_workers, workspace_gb=args.workspace_gb)
