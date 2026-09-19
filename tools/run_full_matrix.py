@@ -289,7 +289,7 @@ CONFIGURATIONS = [
 ]
 
 
-def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoint="pretrained/parseq_alpr_98.5.ckpt") -> Dict[str, Any]:
+def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoint="pretrained/parseq_alpr_98.5.ckpt", batch_size = 64, num_workers = 0) -> Dict[str, Any]:
     os.makedirs("onnx", exist_ok=True)
     os.makedirs("trt", exist_ok=True)
     os.makedirs("results", exist_ok=True)
@@ -306,8 +306,8 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
         max_label_length=hp.max_label_length,
         charset_train=hp.charset_train,
         charset_test=hp.charset_test,
-        batch_size=64,
-        num_workers=0,
+        batch_size=batch_size,
+        num_workers=num_workers,
         augment=False,
     )
     test_loader = datamodule.test_dataloaders(["VeSV_pad"])["VeSV_pad"]
@@ -381,7 +381,7 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
                     onnx_path=cfg["onnx_path"],
                     engine_path=cfg["engine_path"],
                     precision=cfg["precision"],
-                    max_batch_size=64,
+                    max_batch_size=batch_size,
                 )
             record["engine_size_mb"] = round(os.path.getsize(cfg["engine_path"]) / (1024 * 1024), 2)
             print(f"   ✓ Engine ready ({record['engine_size_mb']} MB)")
@@ -464,9 +464,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("pos_checkpoint", nargs="?", default=None, help="Optional positional checkpoint ckpt model")
     parser.add_argument("--checkpoint", type=str, default="pretrained/parseq_alpr_98.5.ckpt", help="Checkpoint ckpt model")
+    parser.add_argument("--batch_size", type=int, default=64, help="Number of ALPR samples to evaluate")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of ALPR samples to evaluate")
     parser.add_argument("--samples", type=int, default=50, help="Number of ALPR samples to evaluate")
     parser.add_argument("--force", action="store_true", help="Force re-export and rebuild of all engines")
     args = parser.parse_args()
 
     ckpt = args.pos_checkpoint if args.pos_checkpoint is not None else args.checkpoint
-    run_full_pipeline(max_eval_samples=args.samples, force=args.force, checkpoint=ckpt)
+    run_full_pipeline(max_eval_samples=args.samples, force=args.force, checkpoint=ckpt, batch_size=args.batch_size, num_workers=args.num_workers)
