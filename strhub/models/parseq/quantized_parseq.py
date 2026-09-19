@@ -272,8 +272,9 @@ class AttentionSoftmaxWrapper(nn.Module):
             attn = self.attn.attn_drop(attn)
             x = attn @ v
 
-        x = x.transpose(1, 2).reshape(B, N, self.attn.attn_dim)
-        x = self.attn.norm(x)
+        x = x.transpose(1, 2).reshape(B, N, getattr(self.attn, "attn_dim", C))
+        if hasattr(self.attn, "norm") and self.attn.norm is not None:
+            x = self.attn.norm(x)
         x = self.attn.proj(x)
         x = self.attn.proj_drop(x)
         return x

@@ -177,7 +177,7 @@ def export_onnx(
         input_names=["images"],
         output_names=["logits"],
         dynamic_axes=dynamic_axes,
-        dynamo=False
+        # dynamo=False
     )
 
     # Reset global_export_qdq flag

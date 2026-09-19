@@ -61,17 +61,23 @@ def int8_matmul_int32(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     pad_n = (8 - (N % 8)) if (a.is_cuda and N % 8 != 0) else 0
     pad_k = (8 - (K % 8)) if (a.is_cuda and K % 8 != 0) else 0
 
-    if pad_m > 0 or pad_n > 0 or pad_k > 0:
-        a_padded = F.pad(a_exp, (0, pad_k, 0, pad_m))
-        b_padded = F.pad(b_exp, (0, pad_n, 0, pad_k))
-        out_padded = torch.empty((batch_size, M + pad_m, N + pad_n), dtype=torch.int32, device=a.device)
-        for i in range(batch_size):
-            out_padded[i] = torch._int_mm(a_padded[i], b_padded[i])
-        out = out_padded[:, :M, :N]
-    else:
-        out = torch.empty((batch_size, M, N), dtype=torch.int32, device=a.device)
-        for i in range(batch_size):
-            out[i] = torch._int_mm(a_exp[i], b_exp[i])
+    try:
+        if pad_m > 0 or pad_n > 0 or pad_k > 0:
+            a_padded = F.pad(a_exp, (0, pad_k, 0, pad_m))
+            b_padded = F.pad(b_exp, (0, pad_n, 0, pad_k))
+            out_padded = torch.empty((batch_size, M + pad_m, N + pad_n), dtype=torch.int32, device=a.device)
+            for i in range(batch_size):
+                out_padded[i] = torch._int_mm(a_padded[i], b_padded[i])
+            out = out_padded[:, :M, :N]
+        else:
+            out = torch.empty((batch_size, M, N), dtype=torch.int32, device=a.device)
+            for i in range(batch_size):
+                out[i] = torch._int_mm(a_exp[i], b_exp[i])
+    except (RuntimeError, NotImplementedError):
+        # Fallback for platforms where torch._int_mm CUDA kernel is not compiled (e.g. Windows PyTorch builds)
+        # Note: torch.matmul on float32 representation of int8 values has 24-bit mantissa precision,
+        # which is 100% bit-exact for int8 x int8 inner products with K <= 512.
+        out = torch.matmul(a_exp.to(torch.float32), b_exp.to(torch.float32)).to(torch.int32)
 
     return out.reshape(*orig_batch, M, N)
 

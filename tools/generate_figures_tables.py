@@ -438,11 +438,18 @@ def generate_tables(results: Dict[str, Any], output_dir: str = "results/tables")
 
 
 if __name__ == "__main__":
-    metrics_file = "results/metrics.json"
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate scientific figures and LaTeX tables from benchmark results")
+    parser.add_argument("--metrics", type=str, default="results/metrics.json", help="Path to metrics JSON file")
+    parser.add_argument("--plots_dir", type=str, default="results/plots", help="Output directory for plots")
+    parser.add_argument("--tables_dir", type=str, default="results/tables", help="Output directory for LaTeX tables")
+    args = parser.parse_args()
+
+    metrics_file = args.metrics
     if os.path.exists(metrics_file):
         with open(metrics_file, "r", encoding="utf-8") as f:
             res = json.load(f)
     else:
         res = {"models": {}}
-    plot_all_figures(res)
-    generate_tables(res)
+    plot_all_figures(res, output_dir=args.plots_dir)
+    generate_tables(res, output_dir=args.tables_dir)

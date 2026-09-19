@@ -16,13 +16,14 @@ from strhub.models.utils import load_from_checkpoint
 from strhub.data.module import SceneTextDataModule
 
 
-def main():
+def main(metrics_path: str = "results/metrics.json", checkpoint_path: str = "pretrained/parseq_alpr_98.5.ckpt"):
     print("=== Starting Comprehensive Scientific Benchmark Collection ===")
-    os.makedirs("results", exist_ok=True)
-    metrics_path = "results/metrics.json"
-
-    with open(metrics_path, "r", encoding="utf-8") as f:
-        master_results = json.load(f)
+    os.makedirs(os.path.dirname(os.path.abspath(metrics_path)), exist_ok=True)
+    if not os.path.exists(metrics_path):
+        master_results = {"models": {}}
+    else:
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            master_results = json.load(f)
 
     models_data = master_results.get("models", {})
 
@@ -35,7 +36,7 @@ def main():
         ("T4 (TensorRT INT8 Integer-Only QAT)", "trt/parseq_m6_nar_int8_io_qat.engine", "t4"),
     ]
 
-    system = load_from_checkpoint("pretrained/parseq_alpr_98.5.ckpt").eval()
+    system = load_from_checkpoint(checkpoint_path).eval()
     hp = system.hparams
 
     datamodule = SceneTextDataModule(
@@ -143,4 +144,9 @@ def main():
     print("All figures and tables generated successfully!")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Collect and consolidate scientific results across TensorRT engines")
+    parser.add_argument("--metrics", type=str, default="results/metrics.json", help="Path to results metrics JSON")
+    parser.add_argument("--checkpoint", type=str, default="pretrained/parseq_alpr_98.5.ckpt", help="Base checkpoint")
+    args = parser.parse_args()
+    main(metrics_path=args.metrics, checkpoint_path=args.checkpoint)

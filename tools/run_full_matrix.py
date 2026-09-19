@@ -289,7 +289,7 @@ CONFIGURATIONS = [
 ]
 
 
-def run_full_pipeline(max_eval_samples: int = 50, force: bool = False) -> Dict[str, Any]:
+def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoint="pretrained/parseq_alpr_98.5.ckpt") -> Dict[str, Any]:
     os.makedirs("onnx", exist_ok=True)
     os.makedirs("trt", exist_ok=True)
     os.makedirs("results", exist_ok=True)
@@ -297,7 +297,7 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False) -> Dict[s
     summary_records = []
 
     # Prepare base system for ALPR loader
-    base_sys = load_from_checkpoint("pretrained/parseq_alpr_98.5.ckpt").eval()
+    base_sys = load_from_checkpoint(checkpoint).eval()
     hp = base_sys.hparams
     datamodule = SceneTextDataModule(
         root_dir="data",
@@ -462,8 +462,11 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False) -> Dict[s
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("pos_checkpoint", nargs="?", default=None, help="Optional positional checkpoint ckpt model")
+    parser.add_argument("--checkpoint", type=str, default="pretrained/parseq_alpr_98.5.ckpt", help="Checkpoint ckpt model")
     parser.add_argument("--samples", type=int, default=50, help="Number of ALPR samples to evaluate")
     parser.add_argument("--force", action="store_true", help="Force re-export and rebuild of all engines")
     args = parser.parse_args()
 
-    run_full_pipeline(max_eval_samples=args.samples, force=args.force)
+    ckpt = args.pos_checkpoint if args.pos_checkpoint is not None else args.checkpoint
+    run_full_pipeline(max_eval_samples=args.samples, force=args.force, checkpoint=ckpt)
