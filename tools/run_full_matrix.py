@@ -312,8 +312,12 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
     )
     test_loader = datamodule.test_dataloaders(["VeSV_pad"])["VeSV_pad"]
 
+    batch_sizes = [1 << i for i in range((max(1, batch_size)).bit_length()) if (1 << i) <= batch_size]
+    if not batch_sizes:
+        batch_sizes = [1]
+
     print("=" * 80)
-    print(f"STARTING FULL MATRIX EXECUTION: {len(CONFIGURATIONS)} CONFIGURATIONS")
+    print(f"STARTING FULL MATRIX EXECUTION: {len(CONFIGURATIONS)} CONFIGURATIONS (Batches: {batch_sizes})")
     print("=" * 80)
 
     for idx, cfg in enumerate(CONFIGURATIONS, 1):
@@ -391,20 +395,34 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
             summary_records.append(record)
             continue
 
-        # Step 3: Benchmark TensorRT Engine (Batch 1 and Batch 32)
+        # Step 3: Benchmark TensorRT Engine across powers of 2 up to batch_size (1 << i)
         try:
-            print("   -> Running TensorRT Benchmark (Batch=1)...")
-            res_b1 = benchmark_tensorrt(cfg["engine_path"], batch_size=1, num_warmup=20, num_iterations=100)
-            record["latency_b1_mean"] = round(res_b1["mean_ms"], 2)
-            record["latency_b1_p95"] = round(res_b1["p95_ms"], 2)
-            record["fps_b1"] = round(res_b1["fps"], 1)
+            max_fps = -1.0
+            max_fps_batch = 1
+            for b in batch_sizes:
+                print(f"   -> Running TensorRT Benchmark (Batch={b})...")
+                res_b = benchmark_tensorrt(
+                    cfg["engine_path"],
+                    batch_size=b,
+                    num_warmup=20 if b == 1 else 10,
+                    num_iterations=100 if b == 1 else 50,
+                )
+                record[f"latency_b{b}_mean"] = round(res_b["mean_ms"], 2)
+                record[f"fps_b{b}"] = round(res_b["fps"], 1)
+                if b == 1:
+                    record["latency_b1_p95"] = round(res_b["p95_ms"], 2)
 
-            print("   -> Running TensorRT Benchmark (Batch=32)...")
-            res_b32 = benchmark_tensorrt(cfg["engine_path"], batch_size=32, num_warmup=10, num_iterations=50)
-            record["latency_b32_mean"] = round(res_b32["mean_ms"], 2)
-            record["fps_b32"] = round(res_b32["fps"], 1)
+                if res_b["fps"] > max_fps:
+                    max_fps = res_b["fps"]
+                    max_fps_batch = b
 
-            print(f"   ✓ B1 Latency: {record['latency_b1_mean']}ms ({record['fps_b1']} FPS) | B32: {record['latency_b32_mean']}ms ({record['fps_b32']} FPS)")
+            record["max_fps"] = round(max_fps, 1)
+            record["max_fps_batch"] = max_fps_batch
+
+            print(
+                f"   ✓ B1 Latency: {record.get('latency_b1_mean', 0.0)}ms ({record.get('fps_b1', 0.0)} FPS) | "
+                f"B{max_fps_batch} (Max): {record.get(f'latency_b{max_fps_batch}_mean', 0.0)}ms ({record.get(f'fps_b{max_fps_batch}', 0.0)} FPS)"
+            )
         except Exception as e:
             print(f"   ✗ Benchmark failed: {e}")
             record["status"] = f"BENCH_FAILED: {e}"
@@ -442,14 +460,29 @@ def run_full_pipeline(max_eval_samples: int = 50, force: bool = False, checkpoin
     report_md_path = "results/full_matrix_benchmark_report.md"
     with open(report_md_path, "w", encoding="utf-8") as f:
         f.write("# Relatório Comparativo Completo: Matriz de Variantes PARSeq\n\n")
-        f.write("| Variante | Precisão | Fusão | Atenção | Engine (MB) | Latência B1 (ms) | FPS B1 | Latência B32 (ms) | FPS B32 | Acurácia Placa (%) | NED (%) | Status |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+        batch_headers = " | ".join([f"Latência B{b} (ms) | FPS B{b}" for b in batch_sizes])
+        f.write(
+            f"| Variante | Precisão | Fusão | Atenção | Engine (MB) | {batch_headers} | Maior FPS (Batch) | Acurácia Placa (%) | NED (%) | Status |\n"
+        )
+        batch_separators = "|---|---" * len(batch_sizes)
+        f.write(f"|---|---|---|---|---|{batch_separators}|---|---|---|---|\n")
         for r in summary_records:
             attn_type = "SageAttn" if r.get("sage_attn") else ("INT-Flash" if r.get("int_fa") else "Padrão")
+            batch_cols = " | ".join([
+                f"{r.get(f'latency_b{b}_mean', '-')} | {r.get(f'fps_b{b}', '-')}"
+                for b in batch_sizes
+            ])
+            max_fps_str = (
+                f"{r['max_fps']} (B{r['max_fps_batch']})"
+                if r.get("max_fps") is not None
+                else "-"
+            )
+            acc_str = f"{r['exact_acc']}%" if r.get("exact_acc") is not None else "-"
+            ned_str = f"{r['ned']}%" if r.get("ned") is not None else "-"
             f.write(
                 f"| {r['label']} | {r['precision'].upper()} | {r['fusion']} | {attn_type} | "
-                f"{r['engine_size_mb']} | {r['latency_b1_mean']} | {r['fps_b1']} | {r['latency_b32_mean']} | {r['fps_b32']} | "
-                f"{r['exact_acc']}% | {r['ned']}% | {r['status']} |\n"
+                f"{r.get('engine_size_mb', '-')} | {batch_cols} | {max_fps_str} | "
+                f"{acc_str} | {ned_str} | {r.get('status', '-')} |\n"
             )
 
     print("\n" + "=" * 80)
@@ -464,8 +497,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("pos_checkpoint", nargs="?", default=None, help="Optional positional checkpoint ckpt model")
     parser.add_argument("--checkpoint", type=str, default="pretrained/parseq_alpr_98.5.ckpt", help="Checkpoint ckpt model")
-    parser.add_argument("--batch_size", type=int, default=64, help="Number of ALPR samples to evaluate")
-    parser.add_argument("--num_workers", type=int, default=0, help="Number of ALPR samples to evaluate")
+    parser.add_argument("--batch_size", type=int, default=64, help="Maximum batch size for engine compilation and benchmarking (powers of 2: 1, 2, 4, ...)")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of DataLoader workers")
     parser.add_argument("--samples", type=int, default=50, help="Number of ALPR samples to evaluate")
     parser.add_argument("--force", action="store_true", help="Force re-export and rebuild of all engines")
     args = parser.parse_args()
