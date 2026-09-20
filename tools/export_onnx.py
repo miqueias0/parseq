@@ -139,22 +139,31 @@ def export_onnx(
             use_plugin=use_plugin,
         ).eval().to(device)
 
-    # Load fine-tuned weights for M6
-    if variant == "m6":
-        qat_ckpt_path = checkpoint_path if ("qat" in checkpoint_path.lower() or "m6" in checkpoint_path.lower()) else "pretrained/parseq_alpr_qat_m6.ckpt"
-        if os.path.exists(qat_ckpt_path):
-            ckpt = torch.load(qat_ckpt_path, map_location=device, weights_only=False)
+    # Load fine-tuned weights if available
+    target_ckpt = None
+    if checkpoint_path and os.path.exists(checkpoint_path) and os.path.normpath(checkpoint_path) != os.path.normpath("pretrained/parseq_alpr_98.5.ckpt"):
+        target_ckpt = checkpoint_path
+    elif variant == "m6" and os.path.exists("pretrained/parseq_alpr_qat_m6.ckpt"):
+        target_ckpt = "pretrained/parseq_alpr_qat_m6.ckpt"
+
+    if target_ckpt and os.path.exists(target_ckpt):
+        try:
+            ckpt = torch.load(target_ckpt, map_location=device, weights_only=False)
             sd = ckpt.get("model_state_dict", ckpt.get("state_dict", ckpt))
-            clean_sd = {k.replace("model.", ""): v for k, v in sd.items()}
-            model.load_state_dict(clean_sd, strict=False)
-            for m in model.modules():
-                if isinstance(m, QuantizedLinear):
-                    m.recompute_weight_scale()
-            if os.path.exists(calib_file):
-                from strhub.models.parseq.quantized_parseq import load_calibration_into_model
-                load_calibration_into_model(model, calib_file)
-            print(f"Loaded trained QAT checkpoint from {qat_ckpt_path} for variant M6.")
-    elif variant == "m2":
+            if sd:
+                clean_sd = {k.replace("model.", ""): v for k, v in sd.items()}
+                model.load_state_dict(clean_sd, strict=False)
+                for m in model.modules():
+                    if isinstance(m, QuantizedLinear):
+                        m.recompute_weight_scale()
+                if os.path.exists(calib_file):
+                    from strhub.models.parseq.quantized_parseq import load_calibration_into_model
+                    load_calibration_into_model(model, calib_file)
+                print(f"Loaded trained checkpoint weights from {target_ckpt} for variant {variant.upper()}.")
+        except Exception as e:
+            print(f"Notice: Failed to load state dict from {target_ckpt}: {e}")
+
+    if variant == "m2":
         model = model.float()
 
     wrapper = ONNXExportWrapper(model, system.tokenizer).eval().to(device)

@@ -995,9 +995,40 @@ def run_full_pipeline(
             "status": "PENDING",
         }
 
+        # Check if a specific variant checkpoint exists; otherwise fallback to normal/default
+        cfg_id = cfg["id"]
+        specific_candidates = [
+            f"pretrained/parseq_alpr_qat_{cfg_id}.ckpt",
+            f"pretrained/parseq_alpr_{cfg_id}.ckpt",
+            f"pretrained/{cfg_id}.ckpt",
+            f"pretrained/{cfg_id}_best.ckpt",
+            f"checkpoints/parseq_alpr_qat_{cfg_id}.ckpt",
+            f"checkpoints/{cfg_id}.ckpt",
+        ]
+        chosen_ckpt = cfg["ckpt"]
+        is_specific = False
+        for cand in specific_candidates:
+            if os.path.exists(cand):
+                chosen_ckpt = cand
+                is_specific = True
+                break
+
+        if is_specific:
+            print(f"      [Checkpoint] Specific checkpoint detected: {chosen_ckpt}")
+        else:
+            print(f"      [Checkpoint] Using default checkpoint: {chosen_ckpt}")
+
+        record["ckpt"] = chosen_ckpt
+        record["is_specific_ckpt"] = is_specific
+
         # Step 1: Export ONNX
         try:
-            if not os.path.exists(cfg["onnx_path"]) or force:
+            onnx_needs_rebuild = (
+                not os.path.exists(cfg["onnx_path"])
+                or force
+                or (is_specific and os.path.exists(chosen_ckpt) and os.path.exists(cfg["onnx_path"]) and os.path.getmtime(chosen_ckpt) > os.path.getmtime(cfg["onnx_path"]))
+            )
+            if onnx_needs_rebuild:
                 print("   -> Exporting ONNX...")
                 fuse_shapes = cfg["fusion_level"] in ["shapes", "mha", "mlp", "all"]
                 fuse_mha = cfg["fusion_level"] in ["mha", "mlp", "all"]
@@ -1005,7 +1036,7 @@ def run_full_pipeline(
                 fuse_layernorm = cfg["fusion_level"] in ["all"]
 
                 export_onnx(
-                    checkpoint_path=cfg["ckpt"],
+                    checkpoint_path=chosen_ckpt,
                     variant=cfg["variant"],
                     output_path=cfg["onnx_path"],
                     opset_version=17,
@@ -1032,7 +1063,13 @@ def run_full_pipeline(
 
         # Step 2: Build TensorRT Engine
         try:
-            if not os.path.exists(cfg["engine_path"]) or force:
+            engine_needs_rebuild = (
+                not os.path.exists(cfg["engine_path"])
+                or force
+                or onnx_needs_rebuild
+                or (is_specific and os.path.exists(chosen_ckpt) and os.path.exists(cfg["engine_path"]) and os.path.getmtime(chosen_ckpt) > os.path.getmtime(cfg["engine_path"]))
+            )
+            if engine_needs_rebuild:
                 print(f"   -> Building TensorRT Engine ({cfg['precision'].upper()})...")
                 build_tensorrt_engine(
                     onnx_path=cfg["onnx_path"],
@@ -1114,7 +1151,7 @@ def run_full_pipeline(
     report_md_path = "results/full_matrix_benchmark_report.md"
     with open(report_md_path, "w", encoding="utf-8") as f:
         f.write("# Relatório Comparativo Completo: Matriz de Variantes PARSeq\n\n")
-        headers = ["ID", "Variante", "Precisão", "Fusão", "Atenção / Operador", "Engine (MB)"]
+        headers = ["ID", "Variante", "Precisão", "Fusão", "Atenção / Operador", "Checkpoint", "Engine (MB)"]
         for b in batch_sizes:
             headers.extend([f"Latência B{b} (ms)", f"FPS B{b}"])
         headers.extend(["Maior FPS (Batch)", "Acurácia Placa (%)", "NED (%)", "Status"])
@@ -1132,12 +1169,16 @@ def run_full_pipeline(
             acc_str = f"{r['exact_acc']}%" if r.get("exact_acc") is not None else "-"
             ned_str = f"{r['ned']}%" if r.get("ned") is not None else "-"
 
+            ckpt_name = os.path.basename(r.get("ckpt", ""))
+            ckpt_str = f"**{ckpt_name}** (Específico)" if r.get("is_specific_ckpt") else ckpt_name
+
             row = [
                 f"`{r['id']}`",
                 str(r["label"]),
                 str(r["precision"].upper()),
                 str(r["fusion"]),
                 str(attn_type),
+                str(ckpt_str),
                 str(r.get("engine_size_mb", "-")),
             ]
             for b in batch_sizes:
