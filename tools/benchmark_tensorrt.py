@@ -15,11 +15,11 @@ if hasattr(sys.stderr, "reconfigure"):
 import numpy as np
 import torch
 import tensorrt as trt
-from strhub.quant.plugins.trt_plugins import register_parseq_plugins
+from strhub.quant.plugins.trt_plugins import register_parseq_plugins, get_trt_logger
 register_parseq_plugins()
 
 
-TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+TRT_LOGGER = get_trt_logger(trt.Logger.WARNING)
 
 
 def benchmark_tensorrt(
@@ -104,7 +104,7 @@ def benchmark_tensorrt(
     fps = float(batch_size * 1000.0 / mean_ms)
     fps_median = float(batch_size * 1000.0 / median_ms)
 
-    return {
+    res = {
         "engine_path": engine_path,
         "batch_size": batch_size,
         "total_layers": total_layers,
@@ -121,6 +121,15 @@ def benchmark_tensorrt(
         "fps": fps,
         "fps_median": fps_median,
     }
+
+    # Explicitly release CUDA tensors, streams, contexts and engines to avoid memory leakage
+    del d_input, d_output, starter, ender, cuda_stream
+    del context, inspector, engine, runtime
+    torch.cuda.empty_cache()
+    import gc
+    gc.collect()
+
+    return res
 
 
 if __name__ == "__main__":

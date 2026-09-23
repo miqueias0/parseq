@@ -94,7 +94,7 @@ extern "C" __global__ void integer_layernorm_forward_kernel(
 
     // Phase 3: Integer Newton-Raphson Square Root (Algorithm 4)
     float n_val = fmaxf(variance + eps, 1e-8f);
-    float xi = fmaxf(sqrtf(n_val), 1.0f);
+    float xi = fmaxf(sqrtf(n_val), 1e-4f);
     #pragma unroll
     for (int it = 0; it < 4; ++it) {
         xi = 0.5f * (xi + n_val / xi);
@@ -220,8 +220,14 @@ extern "C" __global__ void integer_softmax_forward_kernel(
     }
 }
 
+#if defined(_WIN32) || defined(__CYGWIN__)
+  #define PARSEQ_PLUGIN_EXPORT __declspec(dllexport)
+#else
+  #define PARSEQ_PLUGIN_EXPORT __attribute__((visibility("default")))
+#endif
+
 // Exported C functions
-extern "C" __declspec(dllexport) void run_integer_layernorm(
+extern "C" PARSEQ_PLUGIN_EXPORT void run_integer_layernorm(
     float* out, const float* in, const float* weight, const float* bias,
     int num_rows, int D, float eps, cudaStream_t stream
 ) {
@@ -231,7 +237,7 @@ extern "C" __declspec(dllexport) void run_integer_layernorm(
     );
 }
 
-extern "C" __declspec(dllexport) void run_integer_gelu(
+extern "C" PARSEQ_PLUGIN_EXPORT void run_integer_gelu(
     float* out, const float* in, int total_elements, cudaStream_t stream
 ) {
     int block_size = 256;
@@ -241,7 +247,7 @@ extern "C" __declspec(dllexport) void run_integer_gelu(
     );
 }
 
-extern "C" __declspec(dllexport) void run_integer_softmax(
+extern "C" PARSEQ_PLUGIN_EXPORT void run_integer_softmax(
     float* out, const float* in, int num_rows, int N, cudaStream_t stream
 ) {
     int block_size = 256;

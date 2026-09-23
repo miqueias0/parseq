@@ -181,8 +181,14 @@ extern "C" __global__ void int_flash_attention_forward_kernel(
     out[q_offset + d] = final_out;
 }
 
+#if defined(_WIN32) || defined(__CYGWIN__)
+  #define PARSEQ_PLUGIN_EXPORT __declspec(dllexport)
+#else
+  #define PARSEQ_PLUGIN_EXPORT __attribute__((visibility("default")))
+#endif
+
 // C-accessible entry point for ctypes / C++
-extern "C" __declspec(dllexport) void run_int_flash_attention(
+extern "C" PARSEQ_PLUGIN_EXPORT void run_int_flash_attention(
     float* out,
     const float* q,
     const float* k,

@@ -7,16 +7,72 @@ import torch
 import torch.nn as nn
 import tensorrt as trt
 
-# Load compiled CUDA DLL
-_DLL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parseq_plugins.dll")
+# ==============================================================================
+# Cross-Platform CUDA Shared Library Loading (.so on Linux, .dll on Windows)
+# ==============================================================================
+def find_plugin_lib_path() -> str:
+    plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    is_windows = sys.platform.startswith("win")
+    
+    # Priority library names based on OS
+    if is_windows:
+        candidates = ["parseq_plugins.dll"]
+    elif sys.platform == "darwin":
+        candidates = ["parseq_plugins.dylib", "libparseq_plugins.dylib"]
+    else:
+        candidates = ["parseq_plugins.so", "libparseq_plugins.so"]
+
+    for name in candidates:
+        candidate_path = os.path.join(plugin_dir, name)
+        if os.path.isfile(candidate_path):
+            return candidate_path
+
+    # If library not found, attempt auto-compilation if nvcc is present
+    target_path = os.path.join(plugin_dir, candidates[0])
+    try:
+        from tools.build_plugins import compile_cuda_plugins
+        print(f"[TRT Plugins] Native plugin library not found at {target_path}. Attempting automatic compilation with nvcc...")
+        success, out_path = compile_cuda_plugins(output_path=target_path, verbose=True)
+        if success and os.path.isfile(out_path):
+            return out_path
+    except Exception as e:
+        print(f"[TRT Plugins] Automatic compilation check encountered: {e}")
+
+    return target_path
+
+
 _DLL = None
 
-def get_plugin_dll():
+def get_plugin_dll(raise_on_error: bool = True):
     global _DLL
-    if _DLL is None:
-        if not os.path.exists(_DLL_PATH):
-            raise FileNotFoundError(f"Plugin DLL not found at {_DLL_PATH}. Compile with nvcc first.")
-        _DLL = ctypes.CDLL(_DLL_PATH)
+    if _DLL is not None:
+        return _DLL
+
+    lib_path = find_plugin_lib_path()
+    if not os.path.isfile(lib_path):
+        msg = (
+            f"Plugin library not found at: {lib_path}\n"
+            f"Please compile the CUDA kernels for your environment using:\n"
+            f"  python tools/build_plugins.py\n"
+            f"or via Makefile:\n"
+            f"  make plugins"
+        )
+        if raise_on_error:
+            raise FileNotFoundError(msg)
+        return None
+
+    try:
+        _DLL = ctypes.CDLL(lib_path)
+    except OSError as e:
+        msg = (
+            f"Failed to load CUDA plugin library '{lib_path}': {e}\n"
+            f"If you recently migrated between Windows and Linux, recompile using:\n"
+            f"  python tools/build_plugins.py"
+        )
+        if raise_on_error:
+            raise OSError(msg) from e
+        return None
+
     return _DLL
 
 
@@ -27,103 +83,107 @@ class INTFlashAttentionPluginOp(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, scale: float) -> torch.Tensor:
         if q.is_cuda:
-            dll = get_plugin_dll()
-            out = torch.empty_like(q)
-            B, H, N, D = q.shape
-            S = k.shape[2]
-            stream = torch.cuda.current_stream()
-            dll.run_int_flash_attention(
-                ctypes.c_void_p(out.data_ptr()),
-                ctypes.c_void_p(q.data_ptr()),
-                ctypes.c_void_p(k.data_ptr()),
-                ctypes.c_void_p(v.data_ptr()),
-                ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
-                ctypes.c_float(scale),
-                ctypes.c_void_p(stream.cuda_stream)
-            )
-            return out
+            dll = get_plugin_dll(raise_on_error=False)
+            if dll is not None:
+                out = torch.empty_like(q)
+                B, H, N, D = q.shape
+                S = k.shape[2]
+                stream = torch.cuda.current_stream()
+                dll.run_int_flash_attention(
+                    ctypes.c_void_p(out.data_ptr()),
+                    ctypes.c_void_p(q.data_ptr()),
+                    ctypes.c_void_p(k.data_ptr()),
+                    ctypes.c_void_p(v.data_ptr()),
+                    ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
+                    ctypes.c_float(scale),
+                    ctypes.c_void_p(stream.cuda_stream)
+                )
+                return out
         from strhub.quant.int_flashattention import int_flashattention_forward
         return int_flashattention_forward(q, k, v, scale=scale)
 
     @staticmethod
     def symbolic(g, q, k, v, scale):
-        return g.op("trt.plugins::INTFlashAttentionPlugin", q, k, v, scale_f=float(scale))
+        return g.op("trt.plugins::INTFlashAttentionPlugin", q, k, v, scale_f=float(scale)).setType(q.type())
 
 
 class SageAttentionPluginOp(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, scale: float, mode: int = 0) -> torch.Tensor:
         if q.is_cuda:
-            dll = get_plugin_dll()
-            out = torch.empty_like(q)
-            B, H, N, D = q.shape
-            S = k.shape[2]
-            stream = torch.cuda.current_stream()
-            dll.run_sage_attention(
-                ctypes.c_void_p(out.data_ptr()),
-                ctypes.c_void_p(q.data_ptr()),
-                ctypes.c_void_p(k.data_ptr()),
-                ctypes.c_void_p(v.data_ptr()),
-                ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
-                ctypes.c_float(scale),
-                ctypes.c_int(mode),
-                ctypes.c_void_p(stream.cuda_stream)
-            )
-            return out
+            dll = get_plugin_dll(raise_on_error=False)
+            if dll is not None:
+                out = torch.empty_like(q)
+                B, H, N, D = q.shape
+                S = k.shape[2]
+                stream = torch.cuda.current_stream()
+                dll.run_sage_attention(
+                    ctypes.c_void_p(out.data_ptr()),
+                    ctypes.c_void_p(q.data_ptr()),
+                    ctypes.c_void_p(k.data_ptr()),
+                    ctypes.c_void_p(v.data_ptr()),
+                    ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
+                    ctypes.c_float(scale),
+                    ctypes.c_int(mode),
+                    ctypes.c_void_p(stream.cuda_stream)
+                )
+                return out
         from strhub.quant.sage_attention import sage_attention_forward
         return sage_attention_forward(q, k, v, scale=scale, mode="sageattn_b" if mode == 0 else "sageattn_vb")
 
     @staticmethod
     def symbolic(g, q, k, v, scale, mode=0):
-        return g.op("trt.plugins::SageAttentionPlugin", q, k, v, scale_f=float(scale), mode_i=int(mode))
+        return g.op("trt.plugins::SageAttentionPlugin", q, k, v, scale_f=float(scale), mode_i=int(mode)).setType(q.type())
 
 
 class IntegerLayerNormPluginOp(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
         if x.is_cuda:
-            dll = get_plugin_dll()
-            out = torch.empty_like(x)
-            D = x.shape[-1]
-            num_rows = x.numel() // D
-            stream = torch.cuda.current_stream()
-            dll.run_integer_layernorm(
-                ctypes.c_void_p(out.data_ptr()),
-                ctypes.c_void_p(x.data_ptr()),
-                None, None,
-                ctypes.c_int(num_rows), ctypes.c_int(D), ctypes.c_float(eps),
-                ctypes.c_void_p(stream.cuda_stream)
-            )
-            return out
+            dll = get_plugin_dll(raise_on_error=False)
+            if dll is not None:
+                out = torch.empty_like(x)
+                D = x.shape[-1]
+                num_rows = x.numel() // D
+                stream = torch.cuda.current_stream()
+                dll.run_integer_layernorm(
+                    ctypes.c_void_p(out.data_ptr()),
+                    ctypes.c_void_p(x.data_ptr()),
+                    None, None,
+                    ctypes.c_int(num_rows), ctypes.c_int(D), ctypes.c_float(eps),
+                    ctypes.c_void_p(stream.cuda_stream)
+                )
+                return out
         # Pure functional CPU fallback
         mean = x.mean(dim=-1, keepdim=True)
         diff = x - mean
         variance = (diff ** 2).mean(dim=-1, keepdim=True)
         n_clamped = torch.clamp(variance + eps, min=1e-8)
-        xi = torch.clamp(torch.sqrt(n_clamped), min=1.0)
+        xi = torch.clamp(torch.sqrt(n_clamped), min=1e-4)
         for _ in range(4):
             xi = 0.5 * (xi + n_clamped / xi)
         return diff / xi
 
     @staticmethod
     def symbolic(g, x, eps=1e-5):
-        return g.op("trt.plugins::IntegerLayerNormPlugin", x, eps_f=float(eps))
+        return g.op("trt.plugins::IntegerLayerNormPlugin", x, eps_f=float(eps)).setType(x.type())
 
 
 class IntegerGELUPluginOp(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor) -> torch.Tensor:
         if x.is_cuda:
-            dll = get_plugin_dll()
-            out = torch.empty_like(x)
-            stream = torch.cuda.current_stream()
-            dll.run_integer_gelu(
-                ctypes.c_void_p(out.data_ptr()),
-                ctypes.c_void_p(x.data_ptr()),
-                ctypes.c_int(x.numel()),
-                ctypes.c_void_p(stream.cuda_stream)
-            )
-            return out
+            dll = get_plugin_dll(raise_on_error=False)
+            if dll is not None:
+                out = torch.empty_like(x)
+                stream = torch.cuda.current_stream()
+                dll.run_integer_gelu(
+                    ctypes.c_void_p(out.data_ptr()),
+                    ctypes.c_void_p(x.data_ptr()),
+                    ctypes.c_int(x.numel()),
+                    ctypes.c_void_p(stream.cuda_stream)
+                )
+                return out
         # Pure functional CPU fallback
         x_scaled = x * 0.7071067811865475
         sign = torch.sign(x_scaled)
@@ -134,25 +194,26 @@ class IntegerGELUPluginOp(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g, x):
-        return g.op("trt.plugins::IntegerGELUPlugin", x)
+        return g.op("trt.plugins::IntegerGELUPlugin", x).setType(x.type())
 
 
 class IntegerSoftmaxPluginOp(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor) -> torch.Tensor:
         if x.is_cuda:
-            dll = get_plugin_dll()
-            out = torch.empty_like(x)
-            N = x.shape[-1]
-            num_rows = x.numel() // N
-            stream = torch.cuda.current_stream()
-            dll.run_integer_softmax(
-                ctypes.c_void_p(out.data_ptr()),
-                ctypes.c_void_p(x.data_ptr()),
-                ctypes.c_int(num_rows), ctypes.c_int(N),
-                ctypes.c_void_p(stream.cuda_stream)
-            )
-            return out
+            dll = get_plugin_dll(raise_on_error=False)
+            if dll is not None:
+                out = torch.empty_like(x)
+                N = x.shape[-1]
+                num_rows = x.numel() // N
+                stream = torch.cuda.current_stream()
+                dll.run_integer_softmax(
+                    ctypes.c_void_p(out.data_ptr()),
+                    ctypes.c_void_p(x.data_ptr()),
+                    ctypes.c_int(num_rows), ctypes.c_int(N),
+                    ctypes.c_void_p(stream.cuda_stream)
+                )
+                return out
         # Pure functional CPU fallback
         max_val = torch.max(x, dim=-1, keepdim=True)[0]
         x_shifted = x - max_val
@@ -165,7 +226,7 @@ class IntegerSoftmaxPluginOp(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g, x):
-        return g.op("trt.plugins::IntegerSoftmaxPlugin", x)
+        return g.op("trt.plugins::IntegerSoftmaxPlugin", x).setType(x.type())
 
 
 # ==============================================================================
@@ -226,14 +287,14 @@ class INTFlashAttentionPluginDynamic(trt.IPluginV2DynamicExt):
         self.scale = float(scale)
 
     def get_output_datatype(self, index: int, input_types: List[trt.DataType]) -> trt.DataType:
-        return input_types[0]
+        return trt.DataType.FLOAT
 
     def get_output_dimensions(self, output_index: int, inputs: List[trt.DimsExprs], expr_builder: trt.IExprBuilder) -> trt.DimsExprs:
         return inputs[0]
 
     def supports_format_combination(self, pos: int, in_out: List[trt.PluginTensorDesc], num_inputs: int) -> bool:
         desc = in_out[pos]
-        return desc.format == trt.TensorFormat.LINEAR and desc.type in [trt.DataType.FLOAT, trt.DataType.HALF]
+        return desc.format == trt.TensorFormat.LINEAR and desc.type == trt.DataType.FLOAT
 
     def configure_plugin(self, in_desc: List[trt.DynamicPluginTensorDesc], out_desc: List[trt.DynamicPluginTensorDesc]):
         pass
@@ -243,25 +304,29 @@ class INTFlashAttentionPluginDynamic(trt.IPluginV2DynamicExt):
 
     def enqueue(self, input_desc: List[trt.PluginTensorDesc], output_desc: List[trt.PluginTensorDesc],
                 inputs: List[int], outputs: List[int], workspace: int, stream: int) -> int:
-        dll = get_plugin_dll()
-        dims_q = input_desc[0].dims
-        B, H, N, D = dims_q[0], dims_q[1], dims_q[2], dims_q[3]
-        dims_k = input_desc[1].dims
-        S = dims_k[2]
+        try:
+            dll = get_plugin_dll(raise_on_error=True)
+            dims_q = input_desc[0].dims
+            B, H, N, D = dims_q[0], dims_q[1], dims_q[2], dims_q[3]
+            dims_k = input_desc[1].dims
+            S = dims_k[2]
 
-        q_ptr = ctypes.c_void_p(inputs[0])
-        k_ptr = ctypes.c_void_p(inputs[1])
-        v_ptr = ctypes.c_void_p(inputs[2])
-        out_ptr = ctypes.c_void_p(outputs[0])
-        stream_ptr = ctypes.c_void_p(stream)
+            q_ptr = ctypes.c_void_p(inputs[0])
+            k_ptr = ctypes.c_void_p(inputs[1])
+            v_ptr = ctypes.c_void_p(inputs[2])
+            out_ptr = ctypes.c_void_p(outputs[0])
+            stream_ptr = ctypes.c_void_p(stream)
 
-        dll.run_int_flash_attention(
-            out_ptr, q_ptr, k_ptr, v_ptr,
-            ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
-            ctypes.c_float(self.scale),
-            stream_ptr
-        )
-        return 0
+            dll.run_int_flash_attention(
+                out_ptr, q_ptr, k_ptr, v_ptr,
+                ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
+                ctypes.c_float(self.scale),
+                stream_ptr
+            )
+            return 0
+        except Exception as e:
+            sys.stderr.write(f"[INTFlashAttentionPlugin ERROR in enqueue]: {e}\n")
+            return 1
 
     def clone(self) -> "INTFlashAttentionPluginDynamic":
         return INTFlashAttentionPluginDynamic(scale=self.scale)
@@ -316,14 +381,14 @@ class SageAttentionPluginDynamic(trt.IPluginV2DynamicExt):
         self.mode = int(mode)
 
     def get_output_datatype(self, index: int, input_types: List[trt.DataType]) -> trt.DataType:
-        return input_types[0]
+        return trt.DataType.FLOAT
 
     def get_output_dimensions(self, output_index: int, inputs: List[trt.DimsExprs], expr_builder: trt.IExprBuilder) -> trt.DimsExprs:
         return inputs[0]
 
     def supports_format_combination(self, pos: int, in_out: List[trt.PluginTensorDesc], num_inputs: int) -> bool:
         desc = in_out[pos]
-        return desc.format == trt.TensorFormat.LINEAR and desc.type in [trt.DataType.FLOAT, trt.DataType.HALF]
+        return desc.format == trt.TensorFormat.LINEAR and desc.type == trt.DataType.FLOAT
 
     def configure_plugin(self, in_desc: List[trt.DynamicPluginTensorDesc], out_desc: List[trt.DynamicPluginTensorDesc]):
         pass
@@ -333,26 +398,30 @@ class SageAttentionPluginDynamic(trt.IPluginV2DynamicExt):
 
     def enqueue(self, input_desc: List[trt.PluginTensorDesc], output_desc: List[trt.PluginTensorDesc],
                 inputs: List[int], outputs: List[int], workspace: int, stream: int) -> int:
-        dll = get_plugin_dll()
-        dims_q = input_desc[0].dims
-        B, H, N, D = dims_q[0], dims_q[1], dims_q[2], dims_q[3]
-        dims_k = input_desc[1].dims
-        S = dims_k[2]
+        try:
+            dll = get_plugin_dll(raise_on_error=True)
+            dims_q = input_desc[0].dims
+            B, H, N, D = dims_q[0], dims_q[1], dims_q[2], dims_q[3]
+            dims_k = input_desc[1].dims
+            S = dims_k[2]
 
-        q_ptr = ctypes.c_void_p(inputs[0])
-        k_ptr = ctypes.c_void_p(inputs[1])
-        v_ptr = ctypes.c_void_p(inputs[2])
-        out_ptr = ctypes.c_void_p(outputs[0])
-        stream_ptr = ctypes.c_void_p(stream)
+            q_ptr = ctypes.c_void_p(inputs[0])
+            k_ptr = ctypes.c_void_p(inputs[1])
+            v_ptr = ctypes.c_void_p(inputs[2])
+            out_ptr = ctypes.c_void_p(outputs[0])
+            stream_ptr = ctypes.c_void_p(stream)
 
-        dll.run_sage_attention(
-            out_ptr, q_ptr, k_ptr, v_ptr,
-            ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
-            ctypes.c_float(self.scale),
-            ctypes.c_int(self.mode),
-            stream_ptr
-        )
-        return 0
+            dll.run_sage_attention(
+                out_ptr, q_ptr, k_ptr, v_ptr,
+                ctypes.c_int(B), ctypes.c_int(H), ctypes.c_int(N), ctypes.c_int(S), ctypes.c_int(D),
+                ctypes.c_float(self.scale),
+                ctypes.c_int(self.mode),
+                stream_ptr
+            )
+            return 0
+        except Exception as e:
+            sys.stderr.write(f"[SageAttentionPlugin ERROR in enqueue]: {e}\n")
+            return 1
 
     def clone(self) -> "SageAttentionPluginDynamic":
         return SageAttentionPluginDynamic(scale=self.scale, mode=self.mode)
@@ -424,24 +493,28 @@ class IntegerLayerNormPluginDynamic(trt.IPluginV2DynamicExt):
 
     def enqueue(self, input_desc: List[trt.PluginTensorDesc], output_desc: List[trt.PluginTensorDesc],
                 inputs: List[int], outputs: List[int], workspace: int, stream: int) -> int:
-        dll = get_plugin_dll()
-        dims = input_desc[0].dims
-        D = dims[-1]
-        total_elements = 1
-        for d in dims:
-            total_elements *= d
-        num_rows = total_elements // D
+        try:
+            dll = get_plugin_dll(raise_on_error=True)
+            dims = input_desc[0].dims
+            D = dims[-1]
+            total_elements = 1
+            for d in dims:
+                total_elements *= d
+            num_rows = total_elements // D
 
-        in_ptr = ctypes.c_void_p(inputs[0])
-        out_ptr = ctypes.c_void_p(outputs[0])
-        stream_ptr = ctypes.c_void_p(stream)
+            in_ptr = ctypes.c_void_p(inputs[0])
+            out_ptr = ctypes.c_void_p(outputs[0])
+            stream_ptr = ctypes.c_void_p(stream)
 
-        dll.run_integer_layernorm(
-            out_ptr, in_ptr, None, None,
-            ctypes.c_int(num_rows), ctypes.c_int(D), ctypes.c_float(self.eps),
-            stream_ptr
-        )
-        return 0
+            dll.run_integer_layernorm(
+                out_ptr, in_ptr, None, None,
+                ctypes.c_int(num_rows), ctypes.c_int(D), ctypes.c_float(self.eps),
+                stream_ptr
+            )
+            return 0
+        except Exception as e:
+            sys.stderr.write(f"[IntegerLayerNormPlugin ERROR in enqueue]: {e}\n")
+            return 1
 
     def clone(self) -> "IntegerLayerNormPluginDynamic":
         return IntegerLayerNormPluginDynamic(eps=self.eps)
@@ -502,20 +575,24 @@ class IntegerGELUPluginDynamic(trt.IPluginV2DynamicExt):
 
     def enqueue(self, input_desc: List[trt.PluginTensorDesc], output_desc: List[trt.PluginTensorDesc],
                 inputs: List[int], outputs: List[int], workspace: int, stream: int) -> int:
-        dll = get_plugin_dll()
-        dims = input_desc[0].dims
-        total_elements = 1
-        for d in dims:
-            total_elements *= d
+        try:
+            dll = get_plugin_dll(raise_on_error=True)
+            dims = input_desc[0].dims
+            total_elements = 1
+            for d in dims:
+                total_elements *= d
 
-        in_ptr = ctypes.c_void_p(inputs[0])
-        out_ptr = ctypes.c_void_p(outputs[0])
-        stream_ptr = ctypes.c_void_p(stream)
+            in_ptr = ctypes.c_void_p(inputs[0])
+            out_ptr = ctypes.c_void_p(outputs[0])
+            stream_ptr = ctypes.c_void_p(stream)
 
-        dll.run_integer_gelu(
-            out_ptr, in_ptr, ctypes.c_int(total_elements), stream_ptr
-        )
-        return 0
+            dll.run_integer_gelu(
+                out_ptr, in_ptr, ctypes.c_int(total_elements), stream_ptr
+            )
+            return 0
+        except Exception as e:
+            sys.stderr.write(f"[IntegerGELUPlugin ERROR in enqueue]: {e}\n")
+            return 1
 
     def clone(self) -> "IntegerGELUPluginDynamic":
         return IntegerGELUPluginDynamic()
@@ -571,22 +648,26 @@ class IntegerSoftmaxPluginDynamic(trt.IPluginV2DynamicExt):
 
     def enqueue(self, input_desc: List[trt.PluginTensorDesc], output_desc: List[trt.PluginTensorDesc],
                 inputs: List[int], outputs: List[int], workspace: int, stream: int) -> int:
-        dll = get_plugin_dll()
-        dims = input_desc[0].dims
-        N = dims[-1]
-        total_elements = 1
-        for d in dims:
-            total_elements *= d
-        num_rows = total_elements // N
+        try:
+            dll = get_plugin_dll(raise_on_error=True)
+            dims = input_desc[0].dims
+            N = dims[-1]
+            total_elements = 1
+            for d in dims:
+                total_elements *= d
+            num_rows = total_elements // N
 
-        in_ptr = ctypes.c_void_p(inputs[0])
-        out_ptr = ctypes.c_void_p(outputs[0])
-        stream_ptr = ctypes.c_void_p(stream)
+            in_ptr = ctypes.c_void_p(inputs[0])
+            out_ptr = ctypes.c_void_p(outputs[0])
+            stream_ptr = ctypes.c_void_p(stream)
 
-        dll.run_integer_softmax(
-            out_ptr, in_ptr, ctypes.c_int(num_rows), ctypes.c_int(N), stream_ptr
-        )
-        return 0
+            dll.run_integer_softmax(
+                out_ptr, in_ptr, ctypes.c_int(num_rows), ctypes.c_int(N), stream_ptr
+            )
+            return 0
+        except Exception as e:
+            sys.stderr.write(f"[IntegerSoftmaxPlugin ERROR in enqueue]: {e}\n")
+            return 1
 
     def clone(self) -> "IntegerSoftmaxPluginDynamic":
         return IntegerSoftmaxPluginDynamic()
@@ -646,3 +727,14 @@ def register_parseq_plugins():
         print(f"[TRT Plugins] Registered creator: {dummy.name} v{dummy.plugin_version}")
 
     _REGISTERED = True
+
+
+_SHARED_TRT_LOGGER = None
+
+def get_trt_logger(severity: Optional[trt.Logger.Severity] = None) -> trt.Logger:
+    """Returns a shared global singleton TensorRT logger to prevent logger mismatch warnings."""
+    global _SHARED_TRT_LOGGER
+    if _SHARED_TRT_LOGGER is None:
+        sev = severity if severity is not None else trt.Logger.WARNING
+        _SHARED_TRT_LOGGER = trt.Logger(sev)
+    return _SHARED_TRT_LOGGER

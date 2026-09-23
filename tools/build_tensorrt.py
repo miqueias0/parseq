@@ -14,11 +14,11 @@ from typing import Dict, Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import tensorrt as trt
-from strhub.quant.plugins.trt_plugins import register_parseq_plugins
+from strhub.quant.plugins.trt_plugins import register_parseq_plugins, get_trt_logger
 register_parseq_plugins()
 
 
-TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+TRT_LOGGER = get_trt_logger(trt.Logger.WARNING)
 
 
 def build_tensorrt_engine(
@@ -56,6 +56,30 @@ def build_tensorrt_engine(
         for error in range(parser.num_errors):
             print("ONNX Parse Error:", parser.get_error(error))
         raise RuntimeError(f"Failed to parse ONNX model: {onnx_path}")
+
+    # Check if network contains custom TRT plugin layers and verify plugin library
+    has_custom_plugins = False
+    for i in range(network.num_layers):
+        l = network.get_layer(i)
+        if hasattr(trt, "LayerType") and hasattr(trt.LayerType, "PLUGIN_V2") and l.type == trt.LayerType.PLUGIN_V2:
+            has_custom_plugins = True
+            break
+        elif "plugin" in str(getattr(l, "name", "")).lower() or "plugin" in type(l).__name__.lower():
+            has_custom_plugins = True
+            break
+
+    if has_custom_plugins:
+        from strhub.quant.plugins.trt_plugins import find_plugin_lib_path, get_plugin_dll
+        dll = get_plugin_dll(raise_on_error=False)
+        if dll is None:
+            lib_p = find_plugin_lib_path()
+            raise RuntimeError(
+                f"TensorRT Engine build requires custom plugin library '{lib_p}', but it could not be loaded.\n"
+                f"Please compile the CUDA plugins on this machine using:\n"
+                f"  python tools/build_plugins.py\n"
+                f"or:\n"
+                f"  make plugins"
+            )
 
     # Optimization Profile for Dynamic Batch
     profile = builder.create_optimization_profile()
@@ -119,6 +143,11 @@ def build_tensorrt_engine(
     t_end = time.perf_counter()
     build_time_s = t_end - t_start
     engine_size_mb = os.path.getsize(engine_path) / (1024 * 1024)
+
+    # Clean up builder resources
+    del plan, network, parser, config, profile, builder
+    import gc
+    gc.collect()
 
     print(f"Engine built successfully in {build_time_s:.2f}s: {engine_path} ({engine_size_mb:.2f} MB)")
 

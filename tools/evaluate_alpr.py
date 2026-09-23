@@ -57,10 +57,10 @@ class TensorRTModelWrapper(torch.nn.Module):
     def __init__(self, engine_path: str, device: str = "cuda"):
         super().__init__()
         import tensorrt as trt
-        from strhub.quant.plugins.trt_plugins import register_parseq_plugins
+        from strhub.quant.plugins.trt_plugins import register_parseq_plugins, get_trt_logger
         register_parseq_plugins()
         self.device = torch.device("cuda")
-        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+        TRT_LOGGER = get_trt_logger(trt.Logger.WARNING)
         runtime = trt.Runtime(TRT_LOGGER)
         print(f"Loading TensorRT Engine for ALPR Evaluation: {engine_path}")
         with open(engine_path, "rb") as f:
@@ -82,6 +82,31 @@ class TensorRTModelWrapper(torch.nn.Module):
         self.num_classes = out_shape[2]
         self.context.set_tensor_address("images", int(self.d_single_in.data_ptr()))
         self.context.set_tensor_address("logits", int(self.d_single_out.data_ptr()))
+
+    def close(self):
+        """Release TensorRT execution context, engine, and GPU buffers."""
+        if hasattr(self, "context") and self.context is not None:
+            del self.context
+            self.context = None
+        if hasattr(self, "engine") and self.engine is not None:
+            del self.engine
+            self.engine = None
+        if hasattr(self, "stream") and self.stream is not None:
+            del self.stream
+            self.stream = None
+        if hasattr(self, "d_single_in"):
+            del self.d_single_in
+        if hasattr(self, "d_single_out"):
+            del self.d_single_out
+        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def forward(self, *args, **kwargs) -> torch.Tensor:
         images = args[-1] if len(args) > 0 and isinstance(args[-1], torch.Tensor) else None

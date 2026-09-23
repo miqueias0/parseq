@@ -12,7 +12,7 @@ def integer_sqrt_newton(n: torch.Tensor, max_iters: int = 4) -> torch.Tensor:
     n_clamped = torch.clamp(n, min=1e-8)
     # Initial estimate: 2^(ceil(bits(n)/2))
     # In vectorized PyTorch, we can initialize with sqrt estimate
-    x0 = torch.clamp(torch.sqrt(n_clamped), min=1.0)
+    x0 = torch.clamp(torch.sqrt(n_clamped), min=1e-4)
     xi = x0
     for _ in range(max_iters):
         xi = 0.5 * (xi + n_clamped / xi)
@@ -42,6 +42,9 @@ class IBERTLayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if torch.jit.is_tracing() or (hasattr(torch.onnx, "is_in_onnx_export") and torch.onnx.is_in_onnx_export()):
+            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+
         # Compute mean across channel dimension
         mean = torch.mean(x, dim=-1, keepdim=True)
         # Compute variance across channel dimension
@@ -72,6 +75,9 @@ class IPTQLayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if torch.jit.is_tracing() or (hasattr(torch.onnx, "is_in_onnx_export") and torch.onnx.is_in_onnx_export()):
+            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+
         mean = torch.mean(x, dim=-1, keepdim=True)
         var = torch.var(x, dim=-1, keepdim=True, unbiased=False)
         std = torch.sqrt(var + self.eps)
