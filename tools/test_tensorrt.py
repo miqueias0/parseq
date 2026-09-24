@@ -154,7 +154,8 @@ class FastTensorRTEvaluator:
         engine_path: str,
         base_system,
         device: str = "cuda",
-        profile_index: int = 0
+        profile_index: int = 0,
+        execution_mode: str = "pipelined"
     ):
         if not os.path.isfile(engine_path):
             raise FileNotFoundError(f"Arquivo TensorRT Engine não encontrado em: {engine_path}")
@@ -167,7 +168,13 @@ class FastTensorRTEvaluator:
         self.hparams = base_system.hparams
         self.engine_path = engine_path
         self.device = torch.device(device if "cuda" in device else "cuda")
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.set_device(self.device)
+            except Exception:
+                pass
         self.profile_index = profile_index
+        self.execution_mode = execution_mode.lower().strip()
 
         logger = get_trt_logger(trt.Logger.WARNING)
         runtime = trt.Runtime(logger)
@@ -244,27 +251,33 @@ class FastTensorRTEvaluator:
             device=self.device
         )
 
-        # Probe whether engine graph supports native multi-batch decoding
-        self.supports_multi_batch = self._probe_multi_batch_support()
-        if self.supports_multi_batch:
-            print("[Modo de Execução] Motor com suporte nativo a lote multi-amostra no decoder.")
-        else:
-            print("[Modo de Execução] Decodificador single-sequence: usando pipelining CUDA assíncrono em stream (acurácia 100% preservada).")
+        # Determine execution strategy
+        if self.execution_mode == "pipelined":
+            self.supports_multi_batch = False
+            print("[Modo de Execução] Pipelining CUDA assíncrono em stream ativo (acurácia 100% preservada).")
+        elif self.execution_mode == "native":
+            self.supports_multi_batch = True
+            print("[Modo de Execução] Despacho único direto nativo forçado.")
+        else: # auto
+            self.supports_multi_batch = self._probe_multi_batch_support()
+            if self.supports_multi_batch:
+                print("[Modo de Execução] Motor com suporte nativo a lote multi-amostra no decoder.")
+            else:
+                print("[Modo de Execução] Decodificador single-sequence detectado: usando pipelining CUDA assíncrono em stream (acurácia 100% preservada).")
 
     def _probe_multi_batch_support(self) -> bool:
-        """Verifica se o motor suporta inferência multi-amostra nativa no decoder."""
+        """Verifica se o motor suporta inferência multi-amostra nativa no decoder decodificando 2 amostras."""
         if self.max_batch < 2:
             return False
         try:
             probe_bs = 2
-            probe_in = torch.zeros(
+            probe_in = torch.randn(
                 (probe_bs, 3, self.img_h, self.img_w),
                 dtype=self.torch_in_dtype,
                 device=self.device
             )
-            probe_out = torch.full(
+            probe_out = torch.empty(
                 (probe_bs, self.out_len, self.num_classes),
-                fill_value=-999.0,
                 dtype=self.torch_out_dtype,
                 device=self.device
             )
@@ -280,8 +293,18 @@ class FastTensorRTEvaluator:
             if not ok:
                 return False
 
-            sample1_is_untouched = bool((probe_out[1] == -999.0).all().item())
-            return not sample1_is_untouched
+            probs = probe_out.cpu().softmax(-1)
+            preds, _ = self.tokenizer.decode(probs)
+            pred0 = preds[0] if len(preds) > 0 else ""
+            pred1 = preds[1] if len(preds) > 1 else ""
+            if len(pred1) == 0 and len(pred0) > 0:
+                return False
+
+            diff = (probe_out[0] - probe_out[1]).abs().max().item()
+            if diff < 1e-4:
+                return False
+
+            return True
         except Exception:
             return False
 
@@ -440,6 +463,8 @@ def main():
                         help="Datasets específicos para avaliação (ex: VeSV_pad RodoSol_pad UFPR_ALPR_pad)")
     parser.add_argument('--max_samples', type=int, default=None, help="Limite máximo de amostras avaliadas por dataset")
     parser.add_argument('--output', '--log_file', default=None, help="Arquivo customizado para salvar o relatório de resultados")
+    parser.add_argument('--execution_mode', default='pipelined', choices=['pipelined', 'auto', 'native'],
+                        help="Estratégia de execução na GPU: 'pipelined' (padrão, garante 100%% de acurácia em qualquer engine PARSeq via stream CUDA assíncrono), 'auto' (detecta via probe), ou 'native' (lote único direto)")
 
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
@@ -486,7 +511,8 @@ def main():
             engine_path=chosen_model,
             base_system=base_sys,
             device=args.device,
-            profile_index=args.profile_index
+            profile_index=args.profile_index,
+            execution_mode=args.execution_mode
         )
 
         hp = base_sys.hparams
