@@ -14,6 +14,7 @@ import os
 import sys
 import glob
 
+
 # Ensure CUDA and cuDNN (libcudnn.so.9) from Python site-packages/nvidia are in LD_LIBRARY_PATH
 def _configure_cuda_and_cudnn_paths():
     if os.environ.get("_PARSEQ_CUDA_ENV_SET") == "1":
@@ -23,9 +24,10 @@ def _configure_cuda_and_cudnn_paths():
     # Search site-packages from sys.path and known virtualenvs
     search_sp = list(sys.path)
     for venv_pattern in (
-        "/home/mon25/modelos/parseq/.venv/lib/python*/site-packages",
-        "/home/mon25/modelos/parseq_full_int8/.venv/lib/python*/site-packages",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "lib", "python*", "site-packages"),
+            "/home/mon25/modelos/parseq/.venv/lib/python*/site-packages",
+            "/home/mon25/modelos/parseq_full_int8/.venv/lib/python*/site-packages",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv", "lib", "python*",
+                         "site-packages"),
     ):
         search_sp.extend(glob.glob(venv_pattern))
 
@@ -44,7 +46,8 @@ def _configure_cuda_and_cudnn_paths():
 
     current_ld = os.environ.get("LD_LIBRARY_PATH", "")
     existing_paths = set(os.path.abspath(x) for x in current_ld.split(":") if x)
-    to_add = [os.path.abspath(d) for d in candidate_dirs if os.path.isdir(d) and os.path.abspath(d) not in existing_paths]
+    to_add = [os.path.abspath(d) for d in candidate_dirs if
+              os.path.isdir(d) and os.path.abspath(d) not in existing_paths]
 
     if to_add:
         unique_to_add = list(dict.fromkeys(to_add))
@@ -59,6 +62,7 @@ def _configure_cuda_and_cudnn_paths():
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception:
             pass
+
 
 _configure_cuda_and_cudnn_paths()
 
@@ -84,6 +88,7 @@ import torch
 import tensorrt as trt
 
 from strhub.quant.plugins.trt_plugins import register_parseq_plugins, get_trt_logger
+
 register_parseq_plugins()
 
 from strhub.data.module import SceneTextDataModule
@@ -93,13 +98,34 @@ from strhub.models.utils import load_from_checkpoint, parse_model_args
 @dataclass
 class Result:
     dataset: str
-    num_samples: int
-    accuracy: float
-    ned: float
-    confidence: float
-    label_length: float
+    num_samples: int = 0
+    accuracy: float = 0.0
+    ned: float = 0.0
+    confidence: float = 0.0
+    label_length: float = 0.0
     latency_ms: float = 0.0
     fps: float = 0.0
+
+    def merge(self, result):
+        # print("\nself:", self)
+        # print("\nresult", result)
+        self.dataset = result.dataset
+        self.accuracy += result.accuracy
+        self.num_samples = result.num_samples
+        self.ned += result.ned
+        self.confidence += result.confidence
+        self.label_length += result.label_length
+        self.latency_ms += result.latency_ms
+        self.fps += result.fps
+        # print("\nself_fim:", self)
+
+    def final_result(self, iterations):
+        self.accuracy /= iterations
+        self.ned /= iterations
+        self.confidence /= iterations
+        self.label_length /= iterations
+        self.latency_ms /= iterations
+        self.fps /= iterations
 
 
 def print_results_table(results: List[Result], file=None):
@@ -109,8 +135,12 @@ def print_results_table(results: List[Result], file=None):
     w = max(map(len, [r.dataset for r in results]))
     w = max(w, len('Dataset'), len('Combined'))
 
-    print('| {:<{w}} | # samples | Accuracy | 1 - NED | Confidence | Label Length | Latency (ms) | Throughput (FPS) |'.format('Dataset', w=w), file=file)
-    print('|:{:-<{w}}:|----------:|---------:|--------:|-----------:|-------------:|-------------:|-----------------:|'.format('----', w=w), file=file)
+    print(
+        '| {:<{w}} | # samples | Accuracy | 1 - NED | Confidence | Label Length | Latency (ms) | Throughput (FPS) |'.format(
+            'Dataset', w=w), file=file)
+    print(
+        '|:{:-<{w}}:|----------:|---------:|--------:|-----------:|-------------:|-------------:|-----------------:|'.format(
+            '----', w=w), file=file)
 
     c = Result('Combined', 0, 0, 0, 0, 0, 0, 0)
     total_time_combined = 0.0
@@ -139,29 +169,35 @@ def print_results_table(results: List[Result], file=None):
         c.latency_ms /= c.num_samples
         c.fps = c.num_samples / total_time_combined if total_time_combined > 0 else 0.0
 
-    print('|-{:-<{w}}-|-----------|----------|---------|------------|--------------|--------------|------------------|'.format('----', w=w), file=file)
+    print(
+        '|-{:-<{w}}-|-----------|----------|---------|------------|--------------|--------------|------------------|'.format(
+            '----', w=w), file=file)
     print(
         f'| {c.dataset:<{w}} | {c.num_samples:>9} | {c.accuracy:>8.2f} | {c.ned:>7.2f} '
         f'| {c.confidence:>10.2f} | {c.label_length:>12.2f} | {c.latency_ms:>12.2f} | {c.fps:>16.1f} |',
         file=file,
     )
 
+    return c
+
 
 class FastTensorRTEvaluator:
     """High-throughput batched evaluator directly utilizing TensorRT execution contexts and GPU streams."""
+
     def __init__(
-        self,
-        engine_path: str,
-        base_system,
-        device: str = "cuda",
-        profile_index: int = 0,
-        execution_mode: str = "pipelined"
+            self,
+            engine_path: str,
+            base_system,
+            device: str = "cuda",
+            profile_index: int = 0,
+            execution_mode: str = "pipelined"
     ):
         if not os.path.isfile(engine_path):
             raise FileNotFoundError(f"Arquivo TensorRT Engine não encontrado em: {engine_path}")
 
         if not torch.cuda.is_available():
-            print("[Aviso] torch.cuda.is_available() reportou False no ambiente atual. Tentando inicializar TensorRT em GPU...")
+            print(
+                "[Aviso] torch.cuda.is_available() reportou False no ambiente atual. Tentando inicializar TensorRT em GPU...")
 
         self.tokenizer = base_system.tokenizer
         self.charset_adapter = base_system.charset_adapter
@@ -258,12 +294,13 @@ class FastTensorRTEvaluator:
         elif self.execution_mode == "native":
             self.supports_multi_batch = True
             print("[Modo de Execução] Despacho único direto nativo forçado.")
-        else: # auto
+        else:  # auto
             self.supports_multi_batch = self._probe_multi_batch_support()
             if self.supports_multi_batch:
                 print("[Modo de Execução] Motor com suporte nativo a lote multi-amostra no decoder.")
             else:
-                print("[Modo de Execução] Decodificador single-sequence detectado: usando pipelining CUDA assíncrono em stream (acurácia 100% preservada).")
+                print(
+                    "[Modo de Execução] Decodificador single-sequence detectado: usando pipelining CUDA assíncrono em stream (acurácia 100% preservada).")
 
     def _probe_multi_batch_support(self) -> bool:
         """Verifica se o motor suporta inferência multi-amostra nativa no decoder decodificando 2 amostras."""
@@ -312,31 +349,31 @@ class FastTensorRTEvaluator:
         """Executa inferência em lote diretamente nos Tensor Cores da GPU."""
         bs = images.shape[0]
 
-        # Asynchronously transfer batch to GPU with proper precision
-        imgs_gpu = images.to(device=self.device, dtype=self.torch_in_dtype, non_blocking=True)
+        # Transfer batch directly to GPU within self.stream to prevent cross-stream race conditions
+        with torch.cuda.stream(self.stream):
+            self.stream.wait_stream(torch.cuda.current_stream())
+            imgs_gpu = images.to(device=self.device, dtype=self.torch_in_dtype, non_blocking=True)
 
-        if self.supports_multi_batch:
-            if bs <= self.max_batch:
-                # Single vectorized TensorRT kernel execution
-                self.context.set_input_shape(self.input_name, (bs, 3, self.img_h, self.img_w))
-                self.context.set_tensor_address(self.input_name, int(self.d_input.data_ptr()))
-                self.context.set_tensor_address(self.output_name, int(self.d_output.data_ptr()))
+            if self.supports_multi_batch:
+                if bs <= self.max_batch:
+                    # Single vectorized TensorRT kernel execution
+                    self.context.set_input_shape(self.input_name, (bs, 3, self.img_h, self.img_w))
+                    self.context.set_tensor_address(self.input_name, int(self.d_input.data_ptr()))
+                    self.context.set_tensor_address(self.output_name, int(self.d_output.data_ptr()))
 
-                with torch.cuda.stream(self.stream):
                     self.d_input[:bs].copy_(imgs_gpu, non_blocking=True)
                     t0 = time.perf_counter()
                     self.context.execute_async_v3(self.stream.cuda_stream)
                     self.stream.synchronize()
                     t_infer = time.perf_counter() - t0
 
-                logits = self.d_output[:bs].to(dtype=torch.float32, copy=True)
-                return logits, t_infer
+                    logits = self.d_output[:bs].to(dtype=torch.float32, copy=True)
+                    return logits, t_infer
 
-            # If dataloader batch_size exceeds engine's max_batch, chunk efficiently
-            logits_chunks = []
-            total_infer_time = 0.0
+                # If dataloader batch_size exceeds engine's max_batch, chunk efficiently
+                logits_chunks = []
+                total_infer_time = 0.0
 
-            with torch.cuda.stream(self.stream):
                 for start in range(0, bs, self.max_batch):
                     end = min(start + self.max_batch, bs)
                     chunk_bs = end - start
@@ -353,32 +390,31 @@ class FastTensorRTEvaluator:
 
                     logits_chunks.append(self.d_output[:chunk_bs].to(dtype=torch.float32, copy=True))
 
-            logits = torch.cat(logits_chunks, dim=0)
-            return logits, total_infer_time
-        else:
-            # High-throughput asynchronous pipelined execution
-            self.context.set_input_shape(self.input_name, (1, 3, self.img_h, self.img_w))
-            self.context.set_tensor_address(self.input_name, int(self.d_single_in.data_ptr()))
-            self.context.set_tensor_address(self.output_name, int(self.d_single_out.data_ptr()))
+                logits = torch.cat(logits_chunks, dim=0)
+                return logits, total_infer_time
+            else:
+                # High-throughput asynchronous pipelined execution
+                self.context.set_input_shape(self.input_name, (1, 3, self.img_h, self.img_w))
+                self.context.set_tensor_address(self.input_name, int(self.d_single_in.data_ptr()))
+                self.context.set_tensor_address(self.output_name, int(self.d_single_out.data_ptr()))
 
-            if self.d_output.shape[0] < bs:
-                self.d_output = torch.empty(
-                    (bs, self.out_len, self.num_classes),
-                    dtype=self.torch_out_dtype,
-                    device=self.device
-                )
+                if self.d_output.shape[0] < bs:
+                    self.d_output = torch.empty(
+                        (bs, self.out_len, self.num_classes),
+                        dtype=self.torch_out_dtype,
+                        device=self.device
+                    )
 
-            with torch.cuda.stream(self.stream):
                 t0 = time.perf_counter()
                 for i in range(bs):
-                    self.d_single_in.copy_(imgs_gpu[i:i+1], non_blocking=True)
+                    self.d_single_in.copy_(imgs_gpu[i:i + 1], non_blocking=True)
                     self.context.execute_async_v3(self.stream.cuda_stream)
-                    self.d_output[i:i+1].copy_(self.d_single_out, non_blocking=True)
+                    self.d_output[i:i + 1].copy_(self.d_single_out, non_blocking=True)
                 self.stream.synchronize()
                 t_infer = time.perf_counter() - t0
 
-            logits = self.d_output[:bs].to(dtype=torch.float32, copy=True)
-            return logits, t_infer
+                logits = self.d_output[:bs].to(dtype=torch.float32, copy=True)
+                return logits, t_infer
 
     def test_step(self, batch) -> Dict[str, Any]:
         """Processa um lote e calcula acurácia, NED, confiança e tempo de inferência."""
@@ -443,69 +479,10 @@ class FastTensorRTEvaluator:
             pass
 
 
-@torch.inference_mode()
-def main():
-    parser = argparse.ArgumentParser(description="Avaliador de Alta Performance para Modelos PARSeq Exportados em TensorRT (.engine)")
-    parser.add_argument('model', nargs='?', default=None, help="Caminho do arquivo .engine a ser testado")
-    parser.add_argument('--model_path', '--engine', dest='model_opt', default=None, help="Caminho do arquivo .engine alternativo")
-    parser.add_argument('--base_checkpoint', default='pretrained/parseq_alpr_98.5.ckpt',
-                        help="Checkpoint base (.ckpt) para carregamento do tokenizer, charset e dimensões de entrada")
-    parser.add_argument('--data_root', default='data', help="Diretório raiz dos dados LMDB")
-    parser.add_argument('--batch_size', type=int, default=64, help="Tamanho do lote para inferência paralela em GPU")
-    parser.add_argument('--num_workers', type=int, default=4, help="Número de workers no DataLoader")
-    parser.add_argument('--cased', action='store_true', default=False, help="Comparação considerando maiúsculas e minúsculas")
-    parser.add_argument('--punctuation', action='store_true', default=False, help="Verificar pontuação")
-    parser.add_argument('--new', action='store_true', default=False, help="Avaliar nos novos datasets de benchmark")
-    parser.add_argument('--rotation', type=int, default=0, help="Ângulo de rotação da imagem em graus (anti-horário)")
-    parser.add_argument('--device', default='cuda', help="Dispositivo CUDA alvo (ex: 'cuda', 'cuda:0', 'cuda:1')")
-    parser.add_argument('--profile_index', type=int, default=0, help="Índice do Optimization Profile compilado no engine")
-    parser.add_argument('--datasets', '--dataset', nargs='+', default=None,
-                        help="Datasets específicos para avaliação (ex: VeSV_pad RodoSol_pad UFPR_ALPR_pad)")
-    parser.add_argument('--max_samples', type=int, default=None, help="Limite máximo de amostras avaliadas por dataset")
-    parser.add_argument('--output', '--log_file', default=None, help="Arquivo customizado para salvar o relatório de resultados")
-    parser.add_argument('--execution_mode', default='pipelined', choices=['pipelined', 'auto', 'native'],
-                        help="Estratégia de execução na GPU: 'pipelined' (padrão, garante 100%% de acurácia em qualquer engine PARSeq via stream CUDA assíncrono), 'auto' (detecta via probe), ou 'native' (lote único direto)")
-
-    args, unknown = parser.parse_known_args()
-    kwargs = parse_model_args(unknown)
-
-    chosen_model = args.model if args.model is not None else args.model_opt
-    if chosen_model is None:
-        parser.error("É necessário especificar o arquivo .engine como argumento posicional ou através de --model/--engine.")
-
-    if not chosen_model.endswith(".engine"):
-        print(f"[Aviso] O arquivo '{chosen_model}' não possui extensão .engine. Prosseguindo...")
-
-    # Build charset_test
-    charset_test = string.digits + string.ascii_lowercase
-    if args.cased:
-        charset_test += string.ascii_uppercase
-    if args.punctuation:
-        charset_test += string.punctuation
-    kwargs.update({'charset_test': charset_test})
-
-    # Load base system for tokenizer and dataset hparams
-    if not os.path.exists(args.base_checkpoint):
-        fallback_candidates = [
-            "pretrained/parseq_alpr_98.5.ckpt",
-            "pretrained/parseq_alpr_qat_m6.ckpt",
-            "checkpoints/parseq_alpr_98.5.ckpt",
-        ]
-        found_ckpt = None
-        for fc in fallback_candidates:
-            if os.path.exists(fc):
-                found_ckpt = fc
-                break
-        if found_ckpt:
-            print(f"[Aviso] Checkpoint base '{args.base_checkpoint}' não encontrado. Usando fallback: '{found_ckpt}'")
-            args.base_checkpoint = found_ckpt
-        else:
-            raise FileNotFoundError(f"Checkpoint base não encontrado: {args.base_checkpoint}. Forneça via --base_checkpoint.")
-
-    print(f"Carregando tokenizer e hiperparâmetros de: {args.base_checkpoint}")
-    base_sys = load_from_checkpoint(args.base_checkpoint, **kwargs).eval().cpu()
-
+def run_test(chosen_model, base_sys
+             , args):
     evaluator = None
+    c = None
     try:
         evaluator = FastTensorRTEvaluator(
             engine_path=chosen_model,
@@ -592,7 +569,7 @@ def main():
         print("\n" + "=" * 92)
         print("RELATÓRIO DE AVALIAÇÃO TENSORRT:")
         print("=" * 92)
-        print_results_table(result_list, file=sys.stdout)
+        c = print_results_table(result_list, file=sys.stdout)
 
         try:
             with open(log_path, 'w', encoding='utf-8') as f:
@@ -606,6 +583,139 @@ def main():
         if evaluator is not None:
             evaluator.close()
 
+    return c
+
+import argparse
+from typing import List, Optional
+
+def get_args(
+    model: Optional[str] = None,
+    model_opt: Optional[str] = None,
+    base_checkpoint: str = 'pretrained/parseq_alpr_98.5.ckpt',
+    data_root: str = 'data',
+    batch_size: int = 16,
+    num_workers: int = 4,
+    cased: bool = False,
+    punctuation: bool = False,
+    new: bool = False,
+    rotation: int = 0,
+    device: str = 'cuda',
+    profile_index: int = 0,
+    datasets: Optional[List[str]] = None,
+    max_samples: Optional[int] = None,
+    output: Optional[str] = None,
+    execution_mode: str = 'pipelined',
+    **kwargs
+) -> argparse.Namespace:
+    """
+    Retorna um Namespace idêntico ao retornado por parser.parse_args(),
+    mantendo os defaults originais e permitindo sobrescrever via parâmetros.
+    """
+    return argparse.Namespace(
+        model=model,
+        model_opt=model_opt,
+        base_checkpoint=base_checkpoint,
+        data_root=data_root,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        cased=cased,
+        punctuation=punctuation,
+        new=new,
+        rotation=rotation,
+        device=device,
+        profile_index=profile_index,
+        datasets=datasets,
+        max_samples=max_samples,
+        output=output,
+        execution_mode=execution_mode,
+        **kwargs
+    )
+
+
+def run(model, base_model, iterations=10, args=None, **override_args) -> Result:
+    results: Result = Result(dataset="")
+    if args is None:
+        args = get_args(model=model, **override_args)
+    for _ in range(iterations):
+        a: Result | None = run_test(model, base_model, args)
+        if a is not None:
+            results.merge(a)
+    results.final_result(iterations)
+    return results
+
+
+@torch.inference_mode()
+def main():
+    parser = argparse.ArgumentParser(
+        description="Avaliador de Alta Performance para Modelos PARSeq Exportados em TensorRT (.engine)")
+    parser.add_argument('model', nargs='?', default=None, help="Caminho do arquivo .engine a ser testado")
+    parser.add_argument('--model_path', '--engine', dest='model_opt', default=None,
+                        help="Caminho do arquivo .engine alternativo")
+    parser.add_argument('--base_checkpoint', default='pretrained/parseq_alpr_98.5.ckpt',
+                        help="Checkpoint base (.ckpt) para carregamento do tokenizer, charset e dimensões de entrada")
+    parser.add_argument('--data_root', default='data', help="Diretório raiz dos dados LMDB")
+    parser.add_argument('--batch_size', type=int, default=16, help="Tamanho do lote para inferência paralela em GPU")
+    parser.add_argument('--num_workers', type=int, default=4, help="Número de workers no DataLoader")
+    parser.add_argument('--cased', action='store_true', default=False,
+                        help="Comparação considerando maiúsculas e minúsculas")
+    parser.add_argument('--punctuation', action='store_true', default=False, help="Verificar pontuação")
+    parser.add_argument('--new', action='store_true', default=False, help="Avaliar nos novos datasets de benchmark")
+    parser.add_argument('--rotation', type=int, default=0, help="Ângulo de rotação da imagem em graus (anti-horário)")
+    parser.add_argument('--device', default='cuda', help="Dispositivo CUDA alvo (ex: 'cuda', 'cuda:0', 'cuda:1')")
+    parser.add_argument('--profile_index', type=int, default=0,
+                        help="Índice do Optimization Profile compilado no engine")
+    parser.add_argument('--datasets', '--dataset', nargs='+', default=None,
+                        help="Datasets específicos para avaliação (ex: VeSV_pad RodoSol_pad UFPR_ALPR_pad)")
+    parser.add_argument('--max_samples', type=int, default=None, help="Limite máximo de amostras avaliadas por dataset")
+    parser.add_argument('--output', '--log_file', default=None,
+                        help="Arquivo customizado para salvar o relatório de resultados")
+    parser.add_argument('--execution_mode', default='pipelined', choices=['pipelined', 'auto', 'native'],
+                        help="Estratégia de execução na GPU: 'pipelined' (padrão, garante 100%% de acurácia em qualquer engine PARSeq via stream CUDA assíncrono), 'auto' (detecta via probe), ou 'native' (lote único direto)")
+
+    args, unknown = parser.parse_known_args()
+    kwargs = parse_model_args(unknown)
+
+    chosen_model = args.model if args.model is not None else args.model_opt
+    if chosen_model is None:
+        parser.error(
+            "É necessário especificar o arquivo .engine como argumento posicional ou através de --model/--engine.")
+
+    if not chosen_model.endswith(".engine"):
+        print(f"[Aviso] O arquivo '{chosen_model}' não possui extensão .engine. Prosseguindo...")
+
+    # Build charset_test
+    charset_test = string.digits + string.ascii_lowercase
+    if args.cased:
+        charset_test += string.ascii_uppercase
+    if args.punctuation:
+        charset_test += string.punctuation
+    kwargs.update({'charset_test': charset_test})
+
+    # Load base system for tokenizer and dataset hparams
+    if not os.path.exists(args.base_checkpoint):
+        fallback_candidates = [
+            "pretrained/parseq_alpr_98.5.ckpt",
+            "pretrained/parseq_alpr_qat_m6.ckpt",
+            "checkpoints/parseq_alpr_98.5.ckpt",
+        ]
+        found_ckpt = None
+        for fc in fallback_candidates:
+            if os.path.exists(fc):
+                found_ckpt = fc
+                break
+        if found_ckpt:
+            print(f"[Aviso] Checkpoint base '{args.base_checkpoint}' não encontrado. Usando fallback: '{found_ckpt}'")
+            args.base_checkpoint = found_ckpt
+        else:
+            raise FileNotFoundError(
+                f"Checkpoint base não encontrado: {args.base_checkpoint}. Forneça via --base_checkpoint.")
+
+    print(f"Carregando tokenizer e hiperparâmetros de: {args.base_checkpoint}")
+    base_sys = load_from_checkpoint(args.base_checkpoint, **kwargs).eval().cpu()
+
+    run_test(chosen_model, base_sys, args)
+
 
 if __name__ == '__main__':
     main()
+    # run("trt/parseq_m1_nar_fp32.engine", "pretrained/parseq_alpr_98.5.ckpt")
