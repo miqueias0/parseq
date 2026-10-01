@@ -9,7 +9,7 @@ if hasattr(sys.stderr, "reconfigure"):
 import time
 import json
 import argparse
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,7 +25,8 @@ def build_tensorrt_engine(
     onnx_path: str,
     engine_path: str,
     precision: str = "fp32", # "fp32", "fp16", "int8"
-    max_batch_size: int = 8,
+    max_batch_size: int = 256,
+    opt_batch_size: Optional[int] = None,
     img_size: tuple = (32, 128),
     workspace_gb: float = 4.0
 ) -> Dict[str, Any]:
@@ -82,11 +83,12 @@ def build_tensorrt_engine(
             )
 
     # Optimization Profile for Dynamic Batch
+    opt_bs = opt_batch_size if opt_batch_size is not None else min(max_batch_size, 128)
     profile = builder.create_optimization_profile()
     profile.set_shape(
         "images",
         min=(1, 3, img_size[0], img_size[1]),
-        opt=(1, 3, img_size[0], img_size[1]),
+        opt=(opt_bs, 3, img_size[0], img_size[1]),
         max=(max_batch_size, 3, img_size[0], img_size[1])
     )
     config.add_optimization_profile(profile)
@@ -201,7 +203,8 @@ if __name__ == "__main__":
     parser.add_argument("--onnx", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--precision", type=str, default="fp32", choices=["fp32", "fp16", "int8", "int8_io"])
-    parser.add_argument("--max_batch", type=int, default=64)
+    parser.add_argument("--max_batch", type=int, default=256)
+    parser.add_argument("--opt_batch", type=int, default=128, help="Optimal batch size for TensorRT kernel tactic selection")
     parser.add_argument("--workspace_gb", type=float, default=4.0, help="Workspace memory limit in GB")
     parser.add_argument("--all", action="store_true", help="Build all engines for m0..m6")
     args = parser.parse_args()
@@ -216,5 +219,6 @@ if __name__ == "__main__":
             engine_path=args.output,
             precision=args.precision,
             max_batch_size=args.max_batch,
+            opt_batch_size=args.opt_batch,
             workspace_gb=args.workspace_gb,
         )

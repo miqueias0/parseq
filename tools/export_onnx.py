@@ -107,7 +107,7 @@ def export_onnx(
     use_plugin: bool = False,
 ) -> str:
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    device = torch.device("cpu") # Export from CPU for broad ONNX converter compatibility
+    device = torch.device("cuda") # Export from CPU for broad ONNX converter compatibility
 
     system = load_from_checkpoint(checkpoint_path).eval().to(device)
     variant = variant.lower().strip()
@@ -217,14 +217,29 @@ def export_onnx(
     if fuse_shapes and not use_plugin:
         try:
             import onnxsim
+            from onnx import numpy_helper
             print(f"Simplifying ONNX graph with onnxsim (--fuse_shapes active)...")
+            test_shapes = None if dynamic_batch else {"images": [1, 3, img_size[0], img_size[1]]}
             simplified_model, check = onnxsim.simplify(
                 output_path,
-                test_input_shapes={"images": [1, 3, img_size[0], img_size[1]]}
+                test_input_shapes=test_shapes
             )
-            if check:
+            # Verify no attention reshape has frozen dynamic batch dimension
+            has_frozen_batch = False
+            if dynamic_batch and check:
+                for n in simplified_model.graph.node:
+                    if n.op_type == "Reshape":
+                        for init in simplified_model.graph.initializer:
+                            if init.name == n.input[1]:
+                                val = list(numpy_helper.to_array(init))
+                                if len(val) >= 3 and val[0] == 1 and val[1] == -1 and (val[-1] in (384, 768) or val[-2] in (2, 384)):
+                                    has_frozen_batch = True
+                                    break
+            if check and not has_frozen_batch:
                 onnx.save(simplified_model, output_path)
                 print(f"Successfully simplified graph with onnxsim.")
+            elif check and has_frozen_batch:
+                print("Warning: onnxsim froze dynamic batch dimensions in attention Reshapes. Keeping original un-simplified model to guarantee full multi-batch TensorRT throughput.")
             else:
                 print("Warning: onnxsim check failed, keeping original model.")
         except Exception as e:

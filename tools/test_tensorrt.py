@@ -125,7 +125,9 @@ class Result:
         self.confidence /= iterations
         self.label_length /= iterations
         self.latency_ms /= iterations
-        self.fps /= iterations
+        # FPS agregado = amostras / tempo total (média harmônica das FPS por iteração).
+        # A média aritmética das FPS superestima a vazão e não bate com a latência média.
+        self.fps = 1000.0 / self.latency_ms if self.latency_ms > 0 else 0.0
 
 
 def print_results_table(results: List[Result], file=None):
@@ -345,6 +347,14 @@ class FastTensorRTEvaluator:
         except Exception:
             return False
 
+    def warmup(self, batch_size: int = 1, iters: int = 10) -> None:
+        """Aquece o engine (init lazy de CUDA/TRT, alocações, seleção de kernels) fora da medição de FPS."""
+        dummy = torch.randn((max(1, batch_size), 3, self.img_h, self.img_w))
+        for _ in range(iters):
+            self.evaluate_batch(dummy)
+        self.stream.synchronize()
+        torch.cuda.synchronize(self.device)
+
     def evaluate_batch(self, images: torch.Tensor) -> Tuple[torch.Tensor, float]:
         """Executa inferência em lote diretamente nos Tensor Cores da GPU."""
         bs = images.shape[0]
@@ -362,6 +372,7 @@ class FastTensorRTEvaluator:
                     self.context.set_tensor_address(self.output_name, int(self.d_output.data_ptr()))
 
                     self.d_input[:bs].copy_(imgs_gpu, non_blocking=True)
+                    self.stream.synchronize()  # H2D/staging ficam fora da janela cronometrada
                     t0 = time.perf_counter()
                     self.context.execute_async_v3(self.stream.cuda_stream)
                     self.stream.synchronize()
@@ -383,6 +394,7 @@ class FastTensorRTEvaluator:
                     self.context.set_tensor_address(self.output_name, int(self.d_output.data_ptr()))
 
                     self.d_input[:chunk_bs].copy_(imgs_gpu[start:end], non_blocking=True)
+                    self.stream.synchronize()  # H2D/staging ficam fora da janela cronometrada
                     t0 = time.perf_counter()
                     self.context.execute_async_v3(self.stream.cuda_stream)
                     self.stream.synchronize()
@@ -405,6 +417,7 @@ class FastTensorRTEvaluator:
                         device=self.device
                     )
 
+                self.stream.synchronize()  # a cópia H2D do lote fica fora da janela cronometrada
                 t0 = time.perf_counter()
                 for i in range(bs):
                     self.d_single_in.copy_(imgs_gpu[i:i + 1], non_blocking=True)
@@ -422,6 +435,8 @@ class FastTensorRTEvaluator:
         bs = images.shape[0]
 
         logits, t_infer = self.evaluate_batch(images)
+        # logits foi produzido em self.stream; sincroniza antes de usar na stream padrão (fora da janela cronometrada)
+        self.stream.synchronize()
 
         probs = logits.softmax(-1)
         preds, prob_tuples = self.tokenizer.decode(probs)
@@ -491,6 +506,7 @@ def run_test(chosen_model, base_sys
             profile_index=args.profile_index,
             execution_mode=args.execution_mode
         )
+        evaluator.warmup(args.batch_size)
 
         hp = base_sys.hparams
         datamodule = SceneTextDataModule(
@@ -671,6 +687,7 @@ def main():
                         help="Arquivo customizado para salvar o relatório de resultados")
     parser.add_argument('--execution_mode', default='pipelined', choices=['pipelined', 'auto', 'native'],
                         help="Estratégia de execução na GPU: 'pipelined' (padrão, garante 100%% de acurácia em qualquer engine PARSeq via stream CUDA assíncrono), 'auto' (detecta via probe), ou 'native' (lote único direto)")
+    parser.add_argument('--iterations', type=int, default=1, help="Número de Iterações")
 
     args, unknown = parser.parse_known_args()
     kwargs = parse_model_args(unknown)
@@ -713,7 +730,7 @@ def main():
     print(f"Carregando tokenizer e hiperparâmetros de: {args.base_checkpoint}")
     base_sys = load_from_checkpoint(args.base_checkpoint, **kwargs).eval().cpu()
 
-    run_test(chosen_model, base_sys, args)
+    print(run(chosen_model, base_sys, args.iterations, args))
 
 
 if __name__ == '__main__':
