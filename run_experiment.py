@@ -232,6 +232,80 @@ def run_full_scientific_study(
     experiment_results["batch_fps"]["t1"] = t1_fps_list
 
     # -------------------------------------------------------------
+    # 4.5 BUILD AND BENCHMARK APACHE TVM LIBRARIES (TVM FP32, FP16, INT8)
+    # -------------------------------------------------------------
+    print("\n>>> [Stage 4.5] Building and Benchmarking Apache TVM libraries...")
+    try:
+        import tvm
+        from tools.build_tvm import build_tvm_library
+        from tools.benchmark_tvm import benchmark_tvm
+        from tools.validate_tvm import evaluate_tvm_dataset
+        tvm_target = "cuda" if (torch.cuda.is_available() and getattr(tvm.cuda(), "exist", False)) else "llvm"
+
+        # TVM FP32 (M1)
+        tvm_fp32_path = "tvm_lib/parseq_m1_nar_fp32.so"
+        if not os.path.exists(tvm_fp32_path) and os.path.exists(onnx_fp32_path):
+            build_tvm_library(onnx_fp32_path, tvm_fp32_path, target=tvm_target, precision="fp32")
+        if os.path.exists(tvm_fp32_path):
+            res_tvm_fp32 = evaluate_tvm_dataset(tvm_fp32_path, test_loader, system.tokenizer, system.charset_adapter, max_samples=trt_eval_samples, device=tvm_target)
+            bench_tvm_fp32 = benchmark_tvm(tvm_fp32_path, batch_size=1, num_warmup=15, num_iterations=50, device=tvm_target)
+            experiment_results["models"]["TVM FP32"] = {
+                "variant": "tvm_fp32",
+                "exact_plate_acc": res_tvm_fp32["exact_plate_accuracy"] * 100.0,
+                "cer": res_tvm_fp32["character_error_rate"] * 100.0,
+                "ned": res_tvm_fp32["normalized_edit_distance"] * 100.0,
+                "latency_ms": bench_tvm_fp32["mean_ms"],
+                "median_latency_ms": bench_tvm_fp32["median_ms"],
+                "p95_latency_ms": bench_tvm_fp32["p95_ms"],
+                "fps": bench_tvm_fp32["fps"],
+                "size_mb": os.path.getsize(tvm_fp32_path) / (1024 * 1024),
+                "peak_vram_mb": bench_tvm_fp32["peak_vram_mb"],
+            }
+
+        # TVM FP16 (M2)
+        tvm_fp16_path = "tvm_lib/parseq_m2_nar_fp16.so"
+        if not os.path.exists(tvm_fp16_path) and os.path.exists(onnx_fp16_path):
+            build_tvm_library(onnx_fp16_path, tvm_fp16_path, target=tvm_target, precision="fp16")
+        if os.path.exists(tvm_fp16_path):
+            res_tvm_fp16 = evaluate_tvm_dataset(tvm_fp16_path, test_loader, system.tokenizer, system.charset_adapter, max_samples=trt_eval_samples, device=tvm_target)
+            bench_tvm_fp16 = benchmark_tvm(tvm_fp16_path, batch_size=1, num_warmup=15, num_iterations=50, device=tvm_target)
+            experiment_results["models"]["TVM FP16"] = {
+                "variant": "tvm_fp16",
+                "exact_plate_acc": res_tvm_fp16["exact_plate_accuracy"] * 100.0,
+                "cer": res_tvm_fp16["character_error_rate"] * 100.0,
+                "ned": res_tvm_fp16["normalized_edit_distance"] * 100.0,
+                "latency_ms": bench_tvm_fp16["mean_ms"],
+                "median_latency_ms": bench_tvm_fp16["median_ms"],
+                "p95_latency_ms": bench_tvm_fp16["p95_ms"],
+                "fps": bench_tvm_fp16["fps"],
+                "size_mb": os.path.getsize(tvm_fp16_path) / (1024 * 1024),
+                "peak_vram_mb": bench_tvm_fp16["peak_vram_mb"],
+            }
+
+        # TVM INT8 (M5)
+        tvm_int8_path = "tvm_lib/parseq_m5_nar_int8.so"
+        onnx_int8_path = "onnx/parseq_m5_nar_int8_io_ptq.onnx"
+        if not os.path.exists(tvm_int8_path) and os.path.exists(onnx_int8_path):
+            build_tvm_library(onnx_int8_path, tvm_int8_path, target=tvm_target, precision="int8")
+        if os.path.exists(tvm_int8_path):
+            res_tvm_int8 = evaluate_tvm_dataset(tvm_int8_path, test_loader, system.tokenizer, system.charset_adapter, max_samples=trt_eval_samples, device=tvm_target)
+            bench_tvm_int8 = benchmark_tvm(tvm_int8_path, batch_size=1, num_warmup=15, num_iterations=50, device=tvm_target)
+            experiment_results["models"]["TVM INT8"] = {
+                "variant": "tvm_int8",
+                "exact_plate_acc": res_tvm_int8["exact_plate_accuracy"] * 100.0,
+                "cer": res_tvm_int8["character_error_rate"] * 100.0,
+                "ned": res_tvm_int8["normalized_edit_distance"] * 100.0,
+                "latency_ms": bench_tvm_int8["mean_ms"],
+                "median_latency_ms": bench_tvm_int8["median_ms"],
+                "p95_latency_ms": bench_tvm_int8["p95_ms"],
+                "fps": bench_tvm_int8["fps"],
+                "size_mb": os.path.getsize(tvm_int8_path) / (1024 * 1024),
+                "peak_vram_mb": bench_tvm_int8["peak_vram_mb"],
+            }
+    except Exception as e:
+        print(f"Aviso durante [Stage 4.5] Apache TVM: {e}")
+
+    # -------------------------------------------------------------
     # 5. VIDEO BENCHMARK (1000 frames)
     # -------------------------------------------------------------
     print("\n>>> [Stage 5] Running 1000-frame Real-Time Video Benchmark on TensorRT...")

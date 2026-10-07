@@ -910,9 +910,11 @@ def run_full_pipeline(
     num_workers: int = 0,
     workspace_gb: float = 4.0,
     config_filter: Optional[str] = None,
+    enable_tvm: bool = False,
 ) -> Dict[str, Any]:
     os.makedirs("onnx", exist_ok=True)
     os.makedirs("trt", exist_ok=True)
+    os.makedirs("tvm_lib", exist_ok=True)
     os.makedirs("results", exist_ok=True)
 
     summary_records = []
@@ -1181,6 +1183,33 @@ def run_full_pipeline(
                 import gc
                 gc.collect()
 
+        # Step 4b: Optional Apache TVM Benchmarking
+        if enable_tvm:
+            try:
+                import tvm
+                from tools.build_tvm import build_tvm_library
+                from tools.benchmark_tvm import benchmark_tvm
+                from tools.evaluate_alpr import TVMModelWrapper
+                tvm_lib_path = f"tvm_lib/{cfg['id']}.so"
+                tvm_target = "cuda" if (torch.cuda.is_available() and getattr(tvm.cuda(), "exist", False)) else "llvm"
+                if not os.path.exists(tvm_lib_path) or force:
+                    print(f"   -> Building Apache TVM Library: {tvm_lib_path}...")
+                    build_tvm_library(
+                        onnx_path=cfg["onnx_path"],
+                        output_path=tvm_lib_path,
+                        target=tvm_target,
+                        precision=cfg["precision"],
+                        batch_size=1,
+                    )
+                record["tvm_size_mb"] = round(os.path.getsize(tvm_lib_path) / (1024 * 1024), 2)
+                res_tvm = benchmark_tvm(tvm_lib_path, batch_size=1, num_warmup=10, num_iterations=40, device=tvm_target)
+                record["tvm_latency_b1_mean"] = round(res_tvm["mean_ms"], 2)
+                record["tvm_fps_b1"] = round(res_tvm["fps"], 1)
+                print(f"   ✓ TVM B1 Latency: {record['tvm_latency_b1_mean']}ms ({record['tvm_fps_b1']} FPS)")
+            except Exception as te:
+                print(f"   ✗ TVM execution failed: {te}")
+                record["tvm_status"] = f"TVM_FAILED: {te}"
+
         summary_records.append(record)
 
     # Step 5: Save JSON Report
@@ -1247,6 +1276,7 @@ if __name__ == "__main__":
     parser.add_argument("--workspace_gb", type=float, default=4.0, help="Workspace memory limit in GB for TensorRT builder")
     parser.add_argument("--filter", type=str, default=None, help="Filter configurations by substring matching id or label")
     parser.add_argument("--force", action="store_true", help="Force re-export and rebuild of all engines")
+    parser.add_argument("--tvm", action="store_true", help="Habilita compilação e benchmark das bibliotecas Apache TVM correspondentes")
     args = parser.parse_args()
 
     ckpt = args.pos_checkpoint if args.pos_checkpoint is not None else args.checkpoint
@@ -1258,4 +1288,5 @@ if __name__ == "__main__":
         num_workers=args.num_workers,
         workspace_gb=args.workspace_gb,
         config_filter=args.filter,
+        enable_tvm=args.tvm,
     )

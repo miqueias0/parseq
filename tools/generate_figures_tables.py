@@ -360,7 +360,15 @@ def generate_tables(results: Dict[str, Any], output_dir: str = "results/tables")
         acc = m_data.get("exact_plate_acc", 0.0)
         cer = m_data.get("cer", 0.0)
         ned = m_data.get("ned", 0.0)
-        runtime = "TensorRT" if v.startswith("t") else "PyTorch"
+        if "tvm" in v.lower() or "tvm" in m_name.lower():
+            runtime = "Apache TVM"
+        elif v.startswith("t") or "tensorrt" in m_name.lower():
+            runtime = "TensorRT"
+        elif "onnx" in v.lower() or "onnx" in m_name.lower():
+            runtime = "ONNX Runtime"
+        else:
+            runtime = "PyTorch"
+
         prec = "FP32" if "FP32" in m_name else ("FP16" if "FP16" in m_name else ("INT8 Naive" if "Naive" in m_name else ("INT8 W8A8" if "W8A8" in m_name else ("INT8 QAT" if "QAT" in m_name else "INT8 IO PTQ"))))
         t4.append({
             "Model": v.upper(),
@@ -399,7 +407,14 @@ def generate_tables(results: Dict[str, Any], output_dir: str = "results/tables")
     for m_name, m_data in models_dict.items():
         size = m_data.get("size_mb", 0.0)
         vram = m_data.get("peak_vram_mb", 0.0)
-        fmt = "TensorRT Engine" if m_name.startswith("T") else "PyTorch Model"
+        if "tvm" in m_name.lower():
+            fmt = "Apache TVM Library"
+        elif m_name.startswith("T") or "tensorrt" in m_name.lower():
+            fmt = "TensorRT Engine"
+        elif "onnx" in m_name.lower():
+            fmt = "ONNX Model"
+        else:
+            fmt = "PyTorch Model"
         t6.append({
             "Model": m_name,
             "Format": fmt,

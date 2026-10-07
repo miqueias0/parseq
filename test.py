@@ -194,14 +194,61 @@ class TensorRTEvaluator:
         return dict(output=BatchResult(total, correct, ned, confidence, label_length, None, None))
 
 
+class TVMEvaluator:
+    """Wrapper that runs Apache TVM library (.so / .tar) inference and integrates directly with test.py evaluation loop."""
+    def __init__(self, lib_path: str, base_system, device: str = "cuda"):
+        from strhub.models.tvm_utils import TVMRuntimeSession
+        self.tokenizer = base_system.tokenizer
+        self.charset_adapter = base_system.charset_adapter
+        self.hparams = base_system.hparams
+        self.device = torch.device(device if torch.cuda.is_available() and "cuda" in device else "cpu")
+        print(f"Loading Apache TVM Library: {lib_path}")
+        self.session = TVMRuntimeSession(lib_path, device=device)
+
+    def parameters(self):
+        yield torch.empty(0, dtype=torch.float32)
+
+    def test_step(self, batch, batch_idx):
+        from strhub.models.base import BatchResult
+        from nltk import edit_distance
+
+        images, labels = batch
+        bs = images.shape[0]
+        imgs_np = images.cpu().numpy()
+
+        try:
+            out_tvm = self.session.run(imgs_np)
+            logits = torch.from_numpy(out_tvm)
+        except Exception:
+            logits_list = []
+            for i in range(bs):
+                out_np = self.session.run(imgs_np[i:i+1])
+                logits_list.append(torch.from_numpy(out_np))
+            logits = torch.cat(logits_list, dim=0)
+
+        probs = logits.softmax(-1)
+        preds, prob_tuples = self.tokenizer.decode(probs)
+
+        total = correct = ned = confidence = label_length = 0
+        for pred, prob, gt in zip(preds, prob_tuples, labels):
+            confidence += prob.prod().item()
+            pred = self.charset_adapter(pred)
+            ned += edit_distance(pred, gt) / max(len(pred), len(gt), 1)
+            if pred == gt:
+                correct += 1
+            total += 1
+            label_length += len(pred)
+        return dict(output=BatchResult(total, correct, ned, confidence, label_length, None, None))
+
+
 @torch.inference_mode()
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('checkpoint', help="Model checkpoint (.ckpt, .pt, .pth) or (.onnx) or (.engine)")
+    parser.add_argument('checkpoint', help="Model checkpoint (.ckpt, .pt, .pth) or (.onnx) or (.engine) or (.so / .tar)")
     parser.add_argument('--base_checkpoint', default='pretrained/parseq_alpr_98.5.ckpt',
-                        help="Base checkpoint providing tokenizer and hparams when testing .onnx or .engine")
+                        help="Base checkpoint providing tokenizer and hparams when testing .onnx or .engine or .so")
     parser.add_argument('--checks', default=None,
-                        help="Base checkpoint providing tokenizer and hparams when testing .onnx or .engine")
+                        help="Base checkpoint providing tokenizer and hparams when testing .onnx or .engine or .so")
     parser.add_argument('--data_root', default='data')
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=0)
@@ -240,6 +287,9 @@ def main():
     elif ckpt_lower.endswith(".engine"):
         base_sys = load_from_checkpoint(args.base_checkpoint, **kwargs).eval()
         model = TensorRTEvaluator(args.checkpoint, base_sys, device=args.device)
+    elif ckpt_lower.endswith(".so") or ckpt_lower.endswith(".tar"):
+        base_sys = load_from_checkpoint(args.base_checkpoint, **kwargs).eval()
+        model = TVMEvaluator(args.checkpoint, base_sys, device=args.device)
     else:
         # Checkpoint loading
         if "qat" in ckpt_lower or "m6" in ckpt_lower:

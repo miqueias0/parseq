@@ -132,6 +132,58 @@ class TensorRTModelWrapper(torch.nn.Module):
         return batch_logits.to(device=images.device)
 
 
+class TVMModelWrapper(torch.nn.Module):
+    """Wrapper exposing standard PyTorch forward(images) -> logits via Apache TVM Runtime."""
+    def __init__(self, lib_path: str, device: str = "cuda"):
+        super().__init__()
+        import tvm
+        from strhub.models.tvm_utils import TVMRuntimeSession, get_tvm_device
+
+        self.device = torch.device(device if torch.cuda.is_available() and "cuda" in device else "cpu")
+        print(f"Loading Apache TVM Library for ALPR Evaluation: {lib_path}")
+        self.session = TVMRuntimeSession(lib_path, device=device)
+        self.dev = self.session.dev
+
+    def close(self):
+        """Release TVM session and GPU buffers."""
+        if hasattr(self, "session"):
+            del self.session
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        images = args[-1] if len(args) > 0 and isinstance(args[-1], torch.Tensor) else None
+        if images is None:
+            for v in list(args) + list(kwargs.values()):
+                if isinstance(v, torch.Tensor):
+                    images = v
+                    break
+
+        bs = images.shape[0]
+        imgs_np = images.detach().cpu().numpy()
+
+        try:
+            out_tvm = self.session.run(imgs_np)
+            logits = torch.from_numpy(out_tvm)
+        except Exception:
+            # Fallback to slice execution if module has fixed batch size of 1
+            logits_list = []
+            for i in range(bs):
+                single_out = self.session.run(imgs_np[i:i+1])
+                logits_list.append(torch.from_numpy(single_out))
+            logits = torch.cat(logits_list, dim=0)
+
+        return logits.to(device=images.device)
+
+
 def compute_bootstrap_ci(data: List[float], n_bootstrap: int = 1000, ci: float = 0.95) -> Tuple[float, float]:
     """Compute non-parametric bootstrap confidence interval."""
     if not data:
@@ -318,6 +370,9 @@ if __name__ == "__main__":
     elif target_lower.endswith(".engine"):
         print(f"--- Evaluating TensorRT Engine: {target_path} on {args.dataset} ---")
         model = TensorRTModelWrapper(target_path, device=args.device)
+    elif target_lower.endswith(".so") or target_lower.endswith(".tar"):
+        print(f"--- Evaluating Apache TVM Library: {target_path} on {args.dataset} ---")
+        model = TVMModelWrapper(target_path, device=args.device)
     else:
         # PyTorch checkpoint evaluation
         if "qat" in target_lower or args.variant == "m6":
