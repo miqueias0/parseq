@@ -160,3 +160,9 @@ def init_weights(module: nn.Module, name: str = '', exclude: Sequence[str] = ())
     elif isinstance(module, (nn.LayerNorm, nn.BatchNorm2d, nn.GroupNorm)):
         nn.init.ones_(module.weight)
         nn.init.zeros_(module.bias)
+
+
+def check_tvm_available() -> bool:
+    """Dynamic guard checking whether Apache TVM runtime is available in the environment."""
+    from .tvm_utils import check_tvm_available as _check
+    return _check()
