@@ -1,0 +1,4 @@
+# @package _global_
+model:
+  charset_train: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  charset_test: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
